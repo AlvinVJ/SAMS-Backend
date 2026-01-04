@@ -7,7 +7,7 @@ node_modules/
 .env
 prisma/migrations/*_shadow.db
 .DS_Store
-
+/src/firebase/serviceAccountKeys.json
 # Logs
 logs
 *.log
