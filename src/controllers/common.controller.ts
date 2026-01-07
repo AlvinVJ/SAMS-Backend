@@ -26,6 +26,7 @@ export async function signup(req: Request, res: Response) {
       headers: {
         authorization: authHeader,
       },
+      user: req.user,
       body: req.body,
     });
 

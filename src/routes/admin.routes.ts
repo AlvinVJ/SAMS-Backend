@@ -1,9 +1,10 @@
 import { Router } from "express";
-import { getAdminDashboard } from "../controllers/admin.controller.js";
-import { requireRole } from "../middleware/auth.js";
+import { saveProcedure } from "../controllers/admin.controller.js";
+import { requireRole } from "../middleware/requireRole.js";
+import { requireAuth } from "../middleware/requireAuth.js";
 
 export const adminRouter = Router();
 
-adminRouter.use(requireRole("ADMIN"));
+adminRouter.use(requireAuth, requireRole("ADMIN"));
 
-adminRouter.post("/procedures", getAdminDashboard);
+adminRouter.post("/saveProcedure", saveProcedure);

@@ -1,6 +1,6 @@
 // src/routes/admin.routes.ts
 import { Router } from "express";
-import { requireRole } from "../middleware/auth.js";
+import { requireRole } from "../middleware/requireRole.js";
 
 export const facultyRouter = Router();
 

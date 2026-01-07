@@ -14,6 +14,7 @@ interface SignupPayload {
     headers: {
         authorization?: string | undefined;
     };
+    user: {uid: string, email: string, role: string}
     body: any;
 }
 
@@ -100,6 +101,7 @@ export async function signup(payload: SignupPayload): Promise<SignupResult> {
 
         if (!existingUser) {
             let userType: number | null;
+            let role = payload.user.role;
 
             if (role === "admin") userType = 2;
             else if (role === "faculty") userType = 1;

@@ -1,13 +1,12 @@
-import type { NextFunction } from "express";
+import type { Request, Response, NextFunction } from "express";
 import { firebaseAuth } from "../config/firebase.js";
 import { prisma } from "../db/prisma.js";
 
-export async function requireAuth(req: Request, res: Response, next: NextFunction) {
-
-  if (req.method === "OPTIONS") {
-    return next();
-  }
-
+export async function requireAuth(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
   const header = req.headers.authorization;
 
   if (!header?.startsWith("Bearer ")) {
@@ -19,18 +18,28 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   try {
     const decoded = await firebaseAuth.verifyIdToken(token);
 
-    const user = await prisma.userAccount.findFirst({where: {clerk_uid: decoded.uid}});
+    const user = await prisma.userAccount.findFirst({
+      where: { auth_uid: decoded.uid },
+    });
 
     if (!user) {
       return res.status(403).json({ error: "User not registered" });
     }
+
+    const roleMap: Record<number, "ADMIN" | "FACULTY" | "STUDENT"> = {
+      2: "ADMIN",
+      1: "FACULTY",
+      0: "STUDENT",
+    };
+
     req.user = {
       uid: decoded.uid,
       email: decoded.email,
-      role: (user.user_type==0)?"ADMIN":"STUDENT",
+      role: roleMap[user.user_type],
     };
+
     next();
-  } catch {
+  } catch (err) {
     return res.status(401).json({ error: "Invalid token" });
   }
 }
