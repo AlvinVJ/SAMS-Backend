@@ -3,7 +3,7 @@ import { prisma } from "../db/prisma.js";
 export async function getDashboardStats() {
   const [users, requests] = await Promise.all([
     prisma.user.count(),
-    prisma.request.count(),
+    prisma.batches.count(),
   ]);
 
   return {

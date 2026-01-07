@@ -6,4 +6,4 @@ export const adminRouter = Router();
 
 adminRouter.use(requireRole("ADMIN"));
 
-adminRouter.get("/dashboard", getAdminDashboard);
+adminRouter.post("/procedures", getAdminDashboard);

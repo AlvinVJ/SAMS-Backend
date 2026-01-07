@@ -1,5 +1,7 @@
 import { prisma } from "../db/prisma.js";
 import admin from "../config/firebase.js";
+import {firebaseAuth, firestore} from "../config/firebase.js";
+
 
 interface SignupResult {
     success: boolean;
@@ -29,7 +31,7 @@ export async function signup(payload: SignupPayload): Promise<SignupResult> {
 
         const idToken = authHeader.split(" ")[1]!;
 
-        const decodedToken = await admin.auth().verifyIdToken(idToken);
+        const decodedToken = await firebaseAuth.verifyIdToken(idToken);
         const { uid, email } = decodedToken;
 
         if (!email) {
@@ -48,7 +50,7 @@ export async function signup(payload: SignupPayload): Promise<SignupResult> {
             };
         }
 
-        const db = admin.firestore();
+        const db = firestore;
         const userDetailsSnap = await db
             .collection("userDetails").doc(emailPrefix).get();
         if (!userDetailsSnap.exists) {
@@ -59,7 +61,6 @@ export async function signup(payload: SignupPayload): Promise<SignupResult> {
             };
         }
         const userData = userDetailsSnap.data()!;
-        console.log(userData);
 
         const profileRef = db.collection("profiles").doc(emailPrefix);
         const profileSnap = await profileRef.get();
@@ -99,7 +100,7 @@ export async function signup(payload: SignupPayload): Promise<SignupResult> {
             }
             await prisma.userAccount.create({
                 data: {
-                    clerk_uid: uid,
+                    auth_uid: uid,
                     mits_uid: emailPrefix,
                     user_type: userType
                 },
