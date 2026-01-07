@@ -17,10 +17,16 @@ interface SignupPayload {
     body: any;
 }
 
+function isStudentEmail(email: string): boolean {
+  const studentRegex = /^[0-9]+[a-zA-Z]+[0-9]+@mgits\.ac\.in$/;
+  return studentRegex.test(email);
+}
+
+
 export async function signup(payload: SignupPayload): Promise<SignupResult> {
     try {
-        const authHeader = payload.headers.authorization;
 
+        const authHeader = payload.headers.authorization;
         if (!authHeader || !authHeader.startsWith("Bearer ")) {
             return {
                 success: false,
@@ -28,9 +34,7 @@ export async function signup(payload: SignupPayload): Promise<SignupResult> {
                 message: "Missing or invalid Authorization header",
             };
         }
-
         const idToken = authHeader.split(" ")[1]!;
-
         const decodedToken = await firebaseAuth.verifyIdToken(idToken);
         const { uid, email } = decodedToken;
 
@@ -51,16 +55,30 @@ export async function signup(payload: SignupPayload): Promise<SignupResult> {
         }
 
         const db = firestore;
-        const userDetailsSnap = await db
-            .collection("userDetails").doc(emailPrefix).get();
-        if (!userDetailsSnap.exists) {
-            return {
-                success: false,
-                statusCode: 403,
-                message: "User not authorized to sign up",
-            };
+        const isStudent = isStudentEmail(email);
+
+        let role: "student" | "faculty" | "admin";
+
+        if (isStudent) {
+            role = "student";
+        } else {
+            const userDetailsSnap = await db
+                .collection("userDetails")
+                .doc(emailPrefix)
+                .get();
+
+            if (!userDetailsSnap.exists) {
+                return {
+                    success: false,
+                    statusCode: 403,
+                    message: "User not authorized to sign up",
+                };
+            }
+
+            const userData = userDetailsSnap.data()!;
+            role = userData.role;
         }
-        const userData = userDetailsSnap.data()!;
+
 
         const profileRef = db.collection("profiles").doc(emailPrefix);
         const profileSnap = await profileRef.get();
@@ -71,7 +89,7 @@ export async function signup(payload: SignupPayload): Promise<SignupResult> {
                 email: decodedToken.email,
                 isActive: "active",
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                role: userData.role,
+                role: role,
                 uid: emailPrefix.toUpperCase()
             });
         }
@@ -81,17 +99,14 @@ export async function signup(payload: SignupPayload): Promise<SignupResult> {
         });
 
         if (!existingUser) {
-            let userType;
-            if (userData.role == "admin") {
-                userType = 0;
-            }
-            else if (userData.role == "faculty") {
-                userType = 1;
-            }
-            else if (userData.role == "student") {
-                userType = 2;
-            }
-            else {
+            let userType: number | null;
+
+            if (role === "admin") userType = 2;
+            else if (role === "faculty") userType = 1;
+            else if (role === "student") userType = 0; // student
+            else userType = null;
+
+            if(!userType) {
                 return {
                     success: false,
                     statusCode: 403,
@@ -112,7 +127,7 @@ export async function signup(payload: SignupPayload): Promise<SignupResult> {
                 data: {
                     uid,
                     email,
-                    role: userData.role,
+                    role: role,
                 },
             };
         }
@@ -124,7 +139,7 @@ export async function signup(payload: SignupPayload): Promise<SignupResult> {
                 data: {
                     uid,
                     email,
-                    role: userData.role,
+                    role: role,
                 },
             };
 
