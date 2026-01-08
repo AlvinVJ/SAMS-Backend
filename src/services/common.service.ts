@@ -11,9 +11,9 @@ interface SignupResult {
 
 }
 interface SignupPayload {
-    headers: {
-        authorization?: string | undefined;
-    };
+    // headers: {
+    //     authorization?: string | undefined;
+    // };
     user: {uid: string, email: string, role: string}
     body: any;
 }
@@ -26,39 +26,18 @@ function isStudentEmail(email: string): boolean {
 
 export async function signup(payload: SignupPayload): Promise<SignupResult> {
     try {
-
-        const authHeader = payload.headers.authorization;
-        if (!authHeader || !authHeader.startsWith("Bearer ")) {
-            return {
-                success: false,
-                statusCode: 401,
-                message: "Missing or invalid Authorization header",
-            };
-        }
-        const idToken = authHeader.split(" ")[1]!;
-        const decodedToken = await firebaseAuth.verifyIdToken(idToken);
-        const { uid, email } = decodedToken;
-
-        if (!email) {
-            return {
-                success: false,
-                statusCode: 400,
-                message: "Email not found in token",
-            };
-        }
-        const emailPrefix = email.split('@')[0];
-        if (!emailPrefix) {
-            return {
-                success: false,
-                statusCode: 400,
-                message: "Invalid email prefix",
-            };
-        }
-
         const db = firestore;
-        const isStudent = isStudentEmail(email);
+        const isStudent = isStudentEmail(payload.user.email);
 
         let role: "student" | "faculty" | "admin";
+        let emailPrefix = payload.user.email.split("@")[0];
+        if (emailPrefix==null){
+            return {
+                success: false,
+                statusCode: 404,
+                message: "email not found",
+            };
+        }
 
         if (isStudent) {
             role = "student";
@@ -87,8 +66,8 @@ export async function signup(payload: SignupPayload): Promise<SignupResult> {
         if (!profileSnap.exists) {
             await profileRef.set({
                 banned: false,
-                email: decodedToken.email,
-                isActive: "active",
+                email: payload.user.email,
+                isActive: true,
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
                 role: role,
                 uid: emailPrefix.toUpperCase()
@@ -108,7 +87,8 @@ export async function signup(payload: SignupPayload): Promise<SignupResult> {
             else if (role === "student") userType = 0; // student
             else userType = null;
 
-            if(!userType) {
+
+            if(userType==null) {
                 return {
                     success: false,
                     statusCode: 403,
@@ -117,7 +97,7 @@ export async function signup(payload: SignupPayload): Promise<SignupResult> {
             }
             await prisma.userAccount.create({
                 data: {
-                    auth_uid: uid,
+                    auth_uid: payload.user.uid,
                     mits_uid: emailPrefix,
                     user_type: userType
                 },
@@ -127,8 +107,8 @@ export async function signup(payload: SignupPayload): Promise<SignupResult> {
                 statusCode: 201,
                 message: "User signed up successfully",
                 data: {
-                    uid,
-                    email,
+                    uid: payload.user.uid,
+                    email: payload.user.email,
                     role: role,
                 },
             };
@@ -139,8 +119,8 @@ export async function signup(payload: SignupPayload): Promise<SignupResult> {
                 statusCode: 200,
                 message: "User already exists",
                 data: {
-                    uid,
-                    email,
+                    uid: payload.user.uid,
+                    email: payload.user.email,
                     role: role,
                 },
             };

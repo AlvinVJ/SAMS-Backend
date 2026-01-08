@@ -34,36 +34,12 @@ interface inputPayload {
 
 export async function saveProcedureDef(payload: inputPayload): Promise<Result> {
   try {
-    /* 1️ Verify bearer token             */
-    const authHeader = payload.headers.authorization;
-
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return {
-        success: false,
-        statusCode: 401,
-        message: "Missing or invalid Authorization header",
-      };
-    }
-
-    const idToken = authHeader.split(" ")[1]!;
-    const decodedToken = await firebaseAuth.verifyIdToken(idToken);
-
-    const { uid, email } = decodedToken;
-
-    if (!uid || !email) {
-      return {
-        success: false,
-        statusCode: 401,
-        message: "Invalid authentication token",
-      };
-    }
-
     /* ---------------------------------- */
     /* 2️⃣ Validate request body           */
     /* ---------------------------------- */
     const { title, desc } = payload.body.procedure;
 
-    if (!title) {
+    if (!title|| !desc) {
       return {
         success: false,
         statusCode: 400,
@@ -77,7 +53,7 @@ export async function saveProcedureDef(payload: inputPayload): Promise<Result> {
     const existingProcedure = await prisma.procedures.findFirst({
       where: {
         title: title,
-        deleted_at: null,
+        is_active: true
       },
     });
 
@@ -110,7 +86,9 @@ export async function saveProcedureDef(payload: inputPayload): Promise<Result> {
         title: title,
         desc_first_50_char: JSON.stringify(payload.body.procedure.desc).slice(0, 50),
         is_active: true,
-        created_by: uid,
+        created_by: ,
+        deleted_at: null, 
+        
       },
     });
 

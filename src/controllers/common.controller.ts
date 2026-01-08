@@ -16,16 +16,15 @@ export async function ping(
 
 export async function signup(req: Request, res: Response) {
   try {
-
     const authHeader =
       typeof req.headers.authorization === "string"
         ? req.headers.authorization
         : undefined;
 
     const result = await CommonService.signup({
-      headers: {
-        authorization: authHeader,
-      },
+      // headers: {
+      //   authorization: authHeader,
+      // },
       user: req.user,
       body: req.body,
     });

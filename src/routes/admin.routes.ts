@@ -5,6 +5,6 @@ import { requireAuth } from "../middleware/requireAuth.js";
 
 export const adminRouter = Router();
 
-adminRouter.use(requireAuth, requireRole("ADMIN"));
+adminRouter.use(requireAuth, requireRole("admin"));
 
 adminRouter.post("/saveProcedure", saveProcedure);
