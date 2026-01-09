@@ -3,14 +3,14 @@ import admin from "../config/firebase.js";
 import {firebaseAuth, firestore} from "../config/firebase.js";
 
 
-interface SignupResult {
+interface BasicResult {
     success: boolean;
     statusCode: number;
     message: string;
     data?: any;
 
 }
-interface SignupPayload {
+interface BasicPayload {
     // headers: {
     //     authorization?: string | undefined;
     // };
@@ -24,7 +24,7 @@ function isStudentEmail(email: string): boolean {
 }
 
 
-export async function signup(payload: SignupPayload): Promise<SignupResult> {
+export async function signup(payload: BasicPayload): Promise<BasicResult> {
     try {
         const db = firestore;
         const isStudent = isStudentEmail(payload.user.email);
@@ -137,3 +137,31 @@ export async function signup(payload: SignupPayload): Promise<SignupResult> {
     }
 
 }
+
+export async function fetch_procedures(
+  payload: BasicPayload
+): Promise<BasicResult> {
+  try {
+    return {
+      success: true,
+      statusCode: 200,
+      message: `sucessfully fetched procedures for ${payload.user.uid}`,
+      data: {
+        procedures: [
+          ["adl4w2EtqTwzcIEBUS1r", "Leave Application", "Apply for academic leave"],
+          ["PROC_002", "Hostel Outpass", "Request permission to leave hostel"],
+          ["PROC_003", "Bonafide Certificate", "Generate bonafide certificate"],
+        ],
+      },
+    };
+  } catch (error) {
+    console.error("fetch_procedures error:", error);
+
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
+}
+

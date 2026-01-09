@@ -16,6 +16,7 @@ export async function saveProcedure(
       authorization: authHeader,
     },
     body: req.body,
+    user: req.user
   });
   return res.status(result.statusCode).json({
     success: result.success,

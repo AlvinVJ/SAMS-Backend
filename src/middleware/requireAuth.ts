@@ -17,7 +17,7 @@ async function fetchRoleFromFirebase(uid: string): Promise<AppRole> {
 
   const role = doc.data()?.role;
 
-  if (role !== "admin" && role !== "faculty") {
+  if (role ==null) {
     throw new Error("Invalid role in userDetails");
   }
 
@@ -52,6 +52,7 @@ export async function requireAuth(
     }
 
     let role: AppRole;
+    let emailPrefix = email.split("@")[0]!;
 
     // 1️⃣ Student detection
     if (isStudentEmail(email)) {
@@ -59,7 +60,6 @@ export async function requireAuth(
     } 
     // 2️⃣ Faculty / Admin from Firebase whitelist
     else {
-      const emailPrefix = email.split("@")[0]!;
       role = await fetchRoleFromFirebase(emailPrefix);
     }
 
@@ -70,7 +70,8 @@ export async function requireAuth(
     req.user = {
       uid: decoded.uid,
       email: decoded.email,
-      role
+      role,
+      mits_uid: emailPrefix
     };
 
     next();

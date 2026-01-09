@@ -18,6 +18,7 @@ interface inputPayload {
   body: {
     procedure?: any;
   };
+  user: any;
 }
 
 // export async function getDashboardStats() {
@@ -39,7 +40,7 @@ export async function saveProcedureDef(payload: inputPayload): Promise<Result> {
     /* ---------------------------------- */
     const { title, desc } = payload.body.procedure;
 
-    if (!title|| !desc) {
+    if (!title || !desc) {
       return {
         success: false,
         statusCode: 400,
@@ -76,6 +77,7 @@ export async function saveProcedureDef(payload: inputPayload): Promise<Result> {
       });
 
     const firestoreDocId = procRef.id;
+    console.log(payload);
 
     /* ---------------------------------- */
     /* 5️⃣ Save metadata to Azure DB       */
@@ -86,9 +88,8 @@ export async function saveProcedureDef(payload: inputPayload): Promise<Result> {
         title: title,
         desc_first_50_char: JSON.stringify(payload.body.procedure.desc).slice(0, 50),
         is_active: true,
-        created_by: ,
-        deleted_at: null, 
-        
+        created_by: payload.user.mits_uid,
+        deleted_at: null,
       },
     });
 
@@ -96,25 +97,35 @@ export async function saveProcedureDef(payload: inputPayload): Promise<Result> {
       where: { is_active: true },
     });
 
-    const visibility = payload.body.procedure.visibility;
+    const visibility: string[] = payload.body.procedure.visibility;
+    if (!Array.isArray(visibility) || visibility.length === 0) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "Invalid visibility format",
+      };
+    }
+
     // "all" | "student" | "faculty" | "admin"
 
     let allowedUserTypes;
 
-    if (visibility === "all") {
+    if (visibility.includes("all")) {
       allowedUserTypes = userTypes;
     } else {
-      const tag = visibility.toUpperCase(); // "STUDENT", "FACULTY", "ADMIN"
+      const tags = visibility.map(v => v.toUpperCase()); // ["STUDENT", "FACULTY"]
 
       allowedUserTypes = userTypes.filter(
-        (ut) => ut.user_type_tag === tag
+        (ut) => tags.includes(ut.user_type_tag)
       );
     }
+    console.log(allowedUserTypes)
+
 
     await prisma.procedureVisibility.createMany({
       data: allowedUserTypes.map((ut) => ({
         proc_id: firestoreDocId,
-        user_type_id: ut.user_type_id,
+        user_type: ut.user_type_id,
       })),
     });
 
