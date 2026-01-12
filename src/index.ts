@@ -41,7 +41,7 @@ app.use("/api/common", commonRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/faculty", facultyRouter);
 app.use("/api/student", studentRouter);
-app.use("/api/helpers", helperRouter);
+app.use("/api/helper", helperRouter);
 
 app.get("/health/db", async (_req, res) => {
   await prisma.$queryRaw`SELECT 1`;

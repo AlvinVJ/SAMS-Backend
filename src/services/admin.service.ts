@@ -119,8 +119,6 @@ export async function saveProcedureDef(payload: inputPayload): Promise<Result> {
         (ut) => tags.includes(ut.user_type_tag)
       );
     }
-    console.log(allowedUserTypes)
-
 
     await prisma.procedureVisibility.createMany({
       data: allowedUserTypes.map((ut) => ({
