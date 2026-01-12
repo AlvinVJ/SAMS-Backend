@@ -138,20 +138,80 @@ export async function signup(payload: BasicPayload): Promise<BasicResult> {
 
 }
 
+// export async function fetch_procedures(
+//   payload: BasicPayload
+// ): Promise<BasicResult> {
+//   try {
+//     return {
+//       success: true,
+//       statusCode: 200,
+//       message: `sucessfully fetched procedures for ${payload.user.uid}`,
+//       data: {
+//         procedures: [
+//           ["adl4w2EtqTwzcIEBUS1r", "Leave Application", "Apply for academic leave"],
+//           ["PROC_002", "Hostel Outpass", "Request permission to leave hostel"],
+//           ["PROC_003", "Bonafide Certificate", "Generate bonafide certificate"],
+//         ],
+//       },
+//     };
+//   } catch (error) {
+//     console.error("fetch_procedures error:", error);
+
+//     return {
+//       success: false,
+//       statusCode: 500,
+//       message: "Internal server error",
+//     };
+//   }
+// }
+
+
 export async function fetch_procedures(
   payload: BasicPayload
 ): Promise<BasicResult> {
   try {
+    const { mits_uid, role } = payload.user;
+    let role_snap = await prisma.userAccount.findUnique({
+        where: {
+            mits_uid: mits_uid,
+        },
+        select: {
+            user_type: true,
+        }
+    });
+
+    const role_id = role_snap?.user_type;
+
+    // 1. Fetch procedures visible to this user_type
+    const procedures = await prisma.procedures.findMany({
+      where: {
+        is_active: true,
+        ProcedureVisibility: {
+          some: {
+            user_type: role_id,
+          },
+        },
+      },
+      select: {
+        proc_id: true,
+        title: true,
+        desc_first_50_char: true,
+      },
+      orderBy: {
+        title: "asc",
+      },
+    });
+
     return {
       success: true,
       statusCode: 200,
-      message: `sucessfully fetched procedures for ${payload.user.uid}`,
+      message: `Successfully fetched procedures for user ${mits_uid}`,
       data: {
-        procedures: [
-          ["adl4w2EtqTwzcIEBUS1r", "Leave Application", "Apply for academic leave"],
-          ["PROC_002", "Hostel Outpass", "Request permission to leave hostel"],
-          ["PROC_003", "Bonafide Certificate", "Generate bonafide certificate"],
-        ],
+        procedures: procedures.map(p => [
+          p.proc_id,
+          p.title,
+          p.desc_first_50_char,
+        ]),
       },
     };
   } catch (error) {
@@ -164,4 +224,5 @@ export async function fetch_procedures(
     };
   }
 }
+
 
