@@ -14,7 +14,7 @@ interface BasicPayload {
     // headers: {
     //     authorization?: string | undefined;
     // };
-    user: {uid: string, email: string, role: string}
+    user: {uid: string, email: string, role: string, mits_uid: string}
     body: any;
 }
 
@@ -137,33 +137,6 @@ export async function signup(payload: BasicPayload): Promise<BasicResult> {
     }
 
 }
-
-// export async function fetch_procedures(
-//   payload: BasicPayload
-// ): Promise<BasicResult> {
-//   try {
-//     return {
-//       success: true,
-//       statusCode: 200,
-//       message: `sucessfully fetched procedures for ${payload.user.uid}`,
-//       data: {
-//         procedures: [
-//           ["adl4w2EtqTwzcIEBUS1r", "Leave Application", "Apply for academic leave"],
-//           ["PROC_002", "Hostel Outpass", "Request permission to leave hostel"],
-//           ["PROC_003", "Bonafide Certificate", "Generate bonafide certificate"],
-//         ],
-//       },
-//     };
-//   } catch (error) {
-//     console.error("fetch_procedures error:", error);
-
-//     return {
-//       success: false,
-//       statusCode: 500,
-//       message: "Internal server error",
-//     };
-//   }
-// }
 
 
 export async function fetch_procedures(
