@@ -2,6 +2,8 @@
 import express from "express";
 import morgan from "morgan";
 import { prisma } from "./db/prisma.js";
+import cors from "cors";
+
 
 
 import { commonRouter } from "./routes/common.routes.js";
@@ -13,12 +15,33 @@ import { helperRouter } from "./routes/helper.routes.js";
 const app = express();
 app.use(express.json());
 app.use(morgan("dev"));
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // allow requests with no origin (curl, mobile apps, Postman)
+      if (!origin) return callback(null, true);
+
+      if (
+        origin.startsWith("http://localhost") ||
+        origin.startsWith("http://127.0.0.1")
+      ) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Not allowed by CORS"));
+    },
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
+  })
+);
+
 
 app.use("/api/common", commonRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/faculty", facultyRouter);
 app.use("/api/student", studentRouter);
-app.use("/api/helpers", helperRouter);
+app.use("/api/helper", helperRouter);
 
 app.get("/health/db", async (_req, res) => {
   await prisma.$queryRaw`SELECT 1`;
