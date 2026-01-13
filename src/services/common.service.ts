@@ -195,4 +195,114 @@ export async function fetch_procedures(
   }
 }
 
+export async function create_request(
+  payload: BasicPayload
+): Promise<BasicResult> {
+  try {
+    const { mits_uid } = payload.user;
+    const { procedureId, formData } = payload.body;
+
+    if (!procedureId || !formData) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "procedureId and formData are required",
+      };
+    }
+
+    const user = await prisma.userAccount.findUnique({
+      where: { mits_uid },
+      select: { user_type: true },
+    });
+
+    if (!user) {
+      return {
+        success: false,
+        statusCode: 403,
+        message: "User not registered",
+      };
+    }
+
+    const procedure = await prisma.procedures.findFirst({
+      where: {
+        proc_id: procedureId,
+        is_active: true,
+        ProcedureVisibility: {
+          some: {
+            user_type: user.user_type,
+          },
+        },
+      },
+    });
+
+    if (!procedure) {
+      return {
+        success: false,
+        statusCode: 403,
+        message: "Procedure not accessible",
+      };
+    }
+
+    const now = admin.firestore.FieldValue.serverTimestamp();
+
+    const requestDoc = {
+      procedure_id: procedureId,
+      created_by: mits_uid,
+      created_at: now,
+      last_updated_at: now,
+
+      status: "PENDING",
+      current_level: 1,
+      priority: "NORMAL",
+
+      //do context mapping
+      context: {
+        department_id: null,
+        class_id: null,
+        club_id: null,
+      },
+
+      form_response: formData,
+
+      approval_progress: [], // initialized empty; filled later
+    };
+
+    const reqRef = await admin
+      .firestore()
+      .collection("requests")
+      .add(requestDoc);
+
+    const req_id = reqRef.id; // 🔑 Firestore doc id
+
+    await prisma.requests.create({
+      data: {
+        req_id,
+        proc_id: procedureId,
+        created_by: mits_uid,
+        status: 0, // PENDING
+      },
+    });
+
+
+    return {
+      success: true,
+      statusCode: 201,
+      message: "Request created successfully",
+      data: {
+        request_id: req_id,
+        procedure_id: procedureId,
+        status: "PENDING",
+      },
+    };
+  } catch (error) {
+    console.error("create_request error:", error);
+
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
+}
+
 
