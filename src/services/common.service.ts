@@ -7,6 +7,7 @@ async function resolveApproversForRole(
   roleTag: string,
   requesterUid: string
 ): Promise<string[]> {
+  console.log(roleTag, requesterUid);
   if (roleTag === "class_advisor") {
     const student = await prisma.student.findUnique({
       where: { mits_uid: requesterUid },
@@ -76,6 +77,7 @@ async function buildInitialApprovalProgress(
   /* 2️⃣ Resolve approvers from roles */
   for (const roleTag of firstLevel.roleIds ?? []) {
     const users = await resolveApproversForRole(roleTag, requesterUid);
+    console.log(users);
     approvers.push(...users);
   }
 
