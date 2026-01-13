@@ -6,7 +6,7 @@ export async function saveProcedure(
   res: Response
 ) {
 
-  const authHeader =
+  const authHeader = 
     typeof req.headers.authorization === "string"
       ? req.headers.authorization
       : undefined;
