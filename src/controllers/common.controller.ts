@@ -22,9 +22,6 @@ export async function signup(req: Request, res: Response) {
         : undefined;
 
     const result = await CommonService.signup({
-      // headers: {
-      //   authorization: authHeader,
-      // },
       user: req.user,
       body: req.body,
     });

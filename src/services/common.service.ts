@@ -11,9 +11,6 @@ interface BasicResult {
 
 }
 interface BasicPayload {
-    // headers: {
-    //     authorization?: string | undefined;
-    // };
     user: {uid: string, email: string, role: string, mits_uid: string}
     body: any;
 }
