@@ -407,4 +407,25 @@ export async function create_request(
   }
 }
 
+export async function getRoleTags(
+  payload: BasicPayload
+): Promise<BasicResult> {
+  try {
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Fetched Role Tags",
+      data: {
+        role_tags: ["a", "b", "c"],
+      }
+    };
+  } catch (error) {
+    console.error("fetch_procedures error:", error);
 
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
+}
