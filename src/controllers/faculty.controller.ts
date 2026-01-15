@@ -1,7 +1,7 @@
 import type { Request, Response } from "express";
 import * as FacultyService from "../services/faculty.service.js";
 
-export async function getRequest(
+export async function getRequestsToApprove(
     req: Request,
     res: Response
 ) {
@@ -10,7 +10,7 @@ export async function getRequest(
       ? req.headers.authorization
       : undefined;
 
-      const result = await FacultyService.getReqApp({
+      const result = await FacultyService.getRequestsToApproveService({
           headers: {
             authorization: authHeader,
           },

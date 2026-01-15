@@ -119,7 +119,6 @@ function isStudentEmail(email: string): boolean {
   return studentRegex.test(email);
 }
 
-
 export async function signup(payload: BasicPayload): Promise<BasicResult> {
     try {
         const db = firestore;
@@ -233,7 +232,6 @@ export async function signup(payload: BasicPayload): Promise<BasicResult> {
     }
 
 }
-
 
 export async function fetch_procedures(
   payload: BasicPayload
