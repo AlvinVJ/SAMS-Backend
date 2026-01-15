@@ -30,6 +30,7 @@ export async function requireAuth(
   next: NextFunction
 ) {
   const header = req.headers.authorization;
+  console.log(req);
   if(header==null){
     return res.status(401).json({ error: "Authorization header not found" });
 
@@ -62,6 +63,7 @@ export async function requireAuth(
     else {
       role = await fetchRoleFromFirebase(emailPrefix);
     }
+    console.log(role);
 
     // OPTIONAL but strongly recommended:
     // persist / fetch from DB instead of recomputing every time
