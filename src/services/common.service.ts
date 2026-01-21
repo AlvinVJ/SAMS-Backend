@@ -407,20 +407,111 @@ export async function create_request(
   }
 }
 
+// export async function getRoleTags(
+//   payload: BasicPayload
+// ): Promise<BasicResult> {
+//   try {
+//     return {
+//       success: true,
+//       statusCode: 200,
+//       message: "Fetched Role Tags",
+//       data: {
+//         role_tags: ["HOD", "b", "c"],
+//       }
+//     };
+//   } catch (error) {
+//     console.error("fetch_procedures error:", error);
+
+//     return {
+//       success: false,
+//       statusCode: 500,
+//       message: "Internal server error",
+//     };
+//   }
+// }
+
 export async function getRoleTags(
   payload: BasicPayload
-): Promise<BasicResult> {
+) {
   try {
+    const { mits_uid } = payload.user;
+
+    /* ---------------------------------- */
+    /* 1️⃣ Global roles (RoleMapping)     */
+    /* ---------------------------------- */
+    const globalRoles = await prisma.roleMapping.findMany({
+      where: {
+        mits_uid,
+        is_active: true,
+        deleted_at: null,
+      },
+      include: {
+        Roles: {
+          select: {
+            role_tag: true,
+          },
+        },
+      },
+    });
+
+    /* ---------------------------------- */
+    /* 2️⃣ Class-based roles              */
+    /* ---------------------------------- */
+    const classRoles = await prisma.classFaculty.findMany({
+      where: {
+        mits_uid,
+        is_active: true,
+        deleted_at: null,
+      },
+      select: {
+        role_tag: true,
+      },
+    });
+
+    /* ---------------------------------- */
+    /* 3️⃣ Club-based roles               */
+    /* ---------------------------------- */
+    const clubRoles = await prisma.clubAdmin.findMany({
+      where: {
+        is_active: true,
+        deleted_at: null,
+        Clubs: {
+          ClubAdmin: {
+            some: {
+              role_tag: {
+                in: [], // handled below
+              },
+            },
+          },
+        },
+      },
+      select: {
+        role_tag: true,
+      },
+    });
+
+    /* ---------------------------------- */
+    /* 4️⃣ Merge + dedupe                 */
+    /* ---------------------------------- */
+    const roleTags = new Set<string>();
+
+    globalRoles.forEach(r => roleTags.add(r.Roles.role_tag));
+    classRoles.forEach(r => roleTags.add(r.role_tag));
+    clubRoles.forEach(r => roleTags.add(r.role_tag));
+
+    /* ---------------------------------- */
+    /* 5️⃣ Return result                  */
+    /* ---------------------------------- */
     return {
       success: true,
       statusCode: 200,
-      message: "Fetched Role Tags",
+      message: "Fetched your role tags",
       data: {
-        role_tags: ["a", "b", "c"],
-      }
+        role_tags: Array.from(roleTags),
+      },
     };
   } catch (error) {
-    console.error("fetch_procedures error:", error);
+    console.error("getMyRoleTagsService error:", error);
 
     return {
       success: false,
