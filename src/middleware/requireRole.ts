@@ -4,7 +4,6 @@ type Role = "admin" | "faculty" | "student";
 
 export function requireRole(...allowedRoles: Role[]) {
   return (req: Request, res: Response, next: NextFunction) => {
-    console.log(req);
     if (!req.user) {
       return res.status(401).json({ error: "Unauthenticated" });
     }

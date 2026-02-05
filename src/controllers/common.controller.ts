@@ -100,3 +100,30 @@ export async function create_request(req: Request, res: Response){
     });
   }
 }
+
+export async function get_role_tags(req: Request, res: Response) {
+  try {
+    const authHeader =
+      typeof req.headers.authorization === "string"
+        ? req.headers.authorization
+        : undefined;
+
+    const result = await CommonService.getRoleTags({
+      user: req.user,
+      body: req.body,
+    });
+
+    return res.status(result.statusCode).json({
+      success: result.success,
+      message: result.message,
+      data: result.data ?? null,
+    });
+  } catch (err) {
+    console.error("Signup controller error:", err);
+
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+}
