@@ -4,7 +4,13 @@ import morgan from "morgan";
 import { prisma } from "./db/prisma.js";
 import cors from "cors";
 
-
+declare global {
+  namespace Express {
+    interface Request {
+      user?: any;
+    }
+  }
+}
 
 import { commonRouter } from "./routes/common.routes.js";
 import { adminRouter } from "./routes/admin.routes.js";
@@ -44,8 +50,17 @@ app.use("/api/student", studentRouter);
 app.use("/api/helper", helperRouter);
 
 app.get("/health/db", async (_req, res) => {
-  await prisma.$queryRaw`SELECT 1`;
-  res.json({ status: "Azure SQL connected" });
+  try {
+    await prisma.$queryRaw `SELECT 1`;
+    res.json({ status: "Azure SQL connected" });
+  } catch (error: any) {
+    console.error("DB Health Check Failed:", error);
+    res.status(500).json({
+      status: "Database connection failed",
+      error: error.message,
+      code: error.code
+    });
+  }
 });
 
 app.get("/ping", async (_req, res) => {

@@ -4,216 +4,233 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlserver"
+  provider = "postgresql"
 }
 
-model Analytics {
-  mits_uid String  @db.NVarChar(50)
-  role_id  Int
-  pending  Int?    @default(0, map: "DF__Analytics__pendi__02925FBF")
-  approved Int?    @default(0, map: "DF__Analytics__appro__038683F8")
-  rejected Int?    @default(0, map: "DF__Analytics__rejec__047AA831")
-  Faculty  Faculty @relation(fields: [mits_uid], references: [mits_uid], onUpdate: NoAction, map: "FK_Analytics_Faculty")
-  Roles    Roles   @relation(fields: [role_id], references: [role_id], onUpdate: NoAction, map: "FK_Analytics_Role")
 
-  @@id([mits_uid, role_id], map: "PK_Analytics")
+model Analytics {
+  mits_uid String
+  role_id  Int
+  pending  Int? @default(0)
+  approved Int? @default(0)
+  rejected Int? @default(0)
+
+  Faculty Faculty @relation(fields: [mits_uid], references: [mits_uid])
+  Roles   Roles   @relation(fields: [role_id], references: [role_id])
+
+  @@id([mits_uid, role_id])
 }
 
 model Batches {
-  batch_id   Int       @id(map: "PK__Batches__DBFC0431CF933272")
-  batch      String    @db.NVarChar(50)
-  is_active  Boolean   @default(true, map: "DF__Batches__is_acti__4589517F")
+  batch_id   Int      @id
+  batch      String
+  is_active  Boolean  @default(true)
   deleted_at DateTime?
-  Classes    Classes[]
-  Student    Student[]
 
-  @@index([is_active], map: "IDX_Batches_Active")
+  Classes Classes[]
+  Student Student[]
+
+  @@index([is_active])
 }
 
 model Classes {
-  class_id     Int            @id(map: "PK__Classes__FDF47986E4199D84")
-  batch_id     Int
-  class        String         @db.NVarChar(50)
-  dept_id      Int
-  is_active    Boolean        @default(true, map: "DF__Classes__is_acti__53D770D6")
-  deleted_at   DateTime?
-  Batches      Batches        @relation(fields: [batch_id], references: [batch_id], onUpdate: NoAction, map: "FK_Classes_Batch")
-  Departments  Departments    @relation(fields: [dept_id], references: [dept_id], onUpdate: NoAction, map: "FK_Classes_Department")
+  class_id   Int     @id
+  batch_id   Int
+  class      String
+  dept_id    Int
+  is_active  Boolean @default(true)
+  deleted_at DateTime?
+
+  Batches      Batches     @relation(fields: [batch_id], references: [batch_id])
+  Departments  Departments @relation(fields: [dept_id], references: [dept_id])
   ClassFaculty ClassFaculty[]
   Student      Student[]
 
-  @@index([is_active], map: "IDX_Classes_Active")
-  @@index([batch_id], map: "IDX_Classes_Batch")
+  @@index([is_active])
+  @@index([batch_id])
 }
 
 model ClassFaculty {
   class_id   Int
-  mits_uid   String    @db.NVarChar(50)
-  role_tag   String    @db.NVarChar(50)
-  is_active  Boolean   @default(true, map: "DF__ClassFacu__is_ac__6F7F8B4B")
+  mits_uid   String
+  role_tag   String
+  is_active  Boolean @default(true)
   deleted_at DateTime?
-  Classes    Classes   @relation(fields: [class_id], references: [class_id], onUpdate: NoAction, map: "FK_ClassFaculty_Class")
-  Faculty    Faculty   @relation(fields: [mits_uid], references: [mits_uid], onUpdate: NoAction, map: "FK_ClassFaculty_Faculty")
-  Roles      Roles     @relation(fields: [role_tag], references: [role_tag], onUpdate: NoAction, map: "FK_ClassFaculty_Role")
 
-  @@id([class_id, mits_uid, role_tag], map: "PK_ClassFaculty")
-  @@index([is_active], map: "IDX_ClassFaculty_Active")
+  Classes Classes @relation(fields: [class_id], references: [class_id])
+  Faculty Faculty @relation(fields: [mits_uid], references: [mits_uid])
+  Roles   Roles   @relation(fields: [role_tag], references: [role_tag])
+
+  @@id([class_id, mits_uid, role_tag])
+  @@index([is_active])
 }
 
 model ClubAdmin {
-  club_admin_id Int       @id(map: "PK__ClubAdmi__F81AA8C1723D88B7")
+  club_admin_id Int     @id
   club_id       Int
-  role_tag      String    @db.NVarChar(50)
-  is_active     Boolean   @default(true, map: "DF__ClubAdmin__is_ac__7DCDAAA2")
+  role_tag      String
+  is_active     Boolean @default(true)
   deleted_at    DateTime?
-  Clubs         Clubs     @relation(fields: [club_id], references: [club_id], onUpdate: NoAction, map: "FK_ClubAdmin_Club")
-  Roles         Roles     @relation(fields: [role_tag], references: [role_tag], onUpdate: NoAction, map: "FK_ClubAdmin_Role")
 
-  @@index([is_active], map: "IDX_ClubAdmin_Active")
+  Clubs Clubs @relation(fields: [club_id], references: [club_id])
+  Roles Roles @relation(fields: [role_tag], references: [role_tag])
+
+  @@index([is_active])
 }
 
 model Clubs {
-  club_id              Int          @id(map: "PK__Clubs__BCAD3DD93E978479")
-  club_name            String       @db.NVarChar(50)
+  club_id              Int     @id
+  club_name            String
   dept_id              Int?
-  coordinator_role_tag String?      @db.NVarChar(50)
-  is_active            Boolean      @default(true, map: "DF__Clubs__is_active__7908F585")
+  coordinator_role_tag String?
+  is_active            Boolean @default(true)
   deleted_at           DateTime?
-  ClubAdmin            ClubAdmin[]
-  Roles                Roles?       @relation(fields: [coordinator_role_tag], references: [role_tag], onDelete: NoAction, onUpdate: NoAction, map: "FK_Clubs_CoordinatorRole")
-  Departments          Departments? @relation(fields: [dept_id], references: [dept_id], onDelete: NoAction, onUpdate: NoAction, map: "FK_Clubs_Department")
 
-  @@index([is_active], map: "IDX_Clubs_Active")
+  ClubAdmin   ClubAdmin[]
+  Roles       Roles?       @relation(fields: [coordinator_role_tag], references: [role_tag])
+  Departments Departments? @relation(fields: [dept_id], references: [dept_id])
+
+  @@index([is_active])
 }
 
 model Departments {
-  dept_id    Int       @id(map: "PK__Departme__DCA65974D53226A8")
-  dept_name  String    @db.NVarChar(100)
-  is_active  Boolean   @default(true, map: "DF__Departmen__is_ac__4865BE2A")
+  dept_id    Int     @id
+  dept_name  String
+  is_active  Boolean @default(true)
   deleted_at DateTime?
-  Classes    Classes[]
-  Clubs      Clubs[]
-  Faculty    Faculty[]
 
-  @@index([is_active], map: "IDX_Departments_Active")
+  Classes Classes[]
+  Clubs   Clubs[]
+  Faculty Faculty[]
+
+  @@index([is_active])
 }
 
 model Faculty {
-  mits_uid      String         @id(map: "PK__Faculty__DE14EEADBCB701BE") @db.NVarChar(50)
-  name          String         @db.NVarChar(30)
+  mits_uid      String  @id
+  name          String
   department_id Int
-  email         String?        @unique(map: "UQ__Faculty__AB6E616427757AC5") @db.NVarChar(50)
-  is_active     Boolean        @default(true, map: "DF__Faculty__is_acti__65F62111")
+  email         String? @unique
+  is_active     Boolean @default(true)
   deleted_at    DateTime?
-  Analytics     Analytics[]
-  ClassFaculty  ClassFaculty[]
-  Departments   Departments    @relation(fields: [department_id], references: [dept_id], onUpdate: NoAction, map: "FK_Faculty_Department")
-  UserAccount   UserAccount    @relation(fields: [mits_uid], references: [mits_uid], onUpdate: NoAction, map: "FK_Faculty_User")
 
-  @@index([is_active], map: "IDX_Faculty_Active")
-  @@index([department_id], map: "IDX_Faculty_Department")
+  Analytics    Analytics[]
+  ClassFaculty ClassFaculty[]
+  Departments  Departments @relation(fields: [department_id], references: [dept_id])
+  UserAccount  UserAccount @relation(fields: [mits_uid], references: [mits_uid])
+
+  @@index([is_active])
+  @@index([department_id])
 }
 
 model Procedures {
-  proc_id             String                @id(map: "PK__Procedur__A21589450DF5BAF2") @db.NVarChar(50)
-  title               String                @db.NVarChar(255)
-  desc_first_50_char  String?               @db.NVarChar(50)
-  is_active           Boolean               @default(true, map: "DF__Procedure__is_ac__093F5D4E")
-  deleted_at          DateTime?
-  created_by          String?               @db.NVarChar(50)
+  proc_id            String  @id
+  title              String
+  desc_first_50_char String?
+  is_active          Boolean @default(true)
+  deleted_at         DateTime?
+  created_by         String?
+
   ProcedureVisibility ProcedureVisibility[]
   Requests            Requests[]
 
-  @@index([is_active], map: "IDX_Procedures_Active")
+  @@index([is_active])
 }
 
 model ProcedureVisibility {
-  proc_id    String     @db.NVarChar(50)
-  user_type  Int
-  Procedures Procedures @relation(fields: [proc_id], references: [proc_id], onUpdate: NoAction, map: "FK_ProcedureVisibility_Procedure")
+  proc_id   String
+  user_type Int
 
-  @@id([proc_id, user_type], map: "PK_ProcedureVisibility")
+  Procedures Procedures @relation(fields: [proc_id], references: [proc_id])
+
+  @@id([proc_id, user_type])
 }
 
 model Requests {
-  req_id      String      @id(map: "PK__Requests__1513A6FB15446C37") @db.NVarChar(50)
-  proc_id     String      @db.NVarChar(50)
-  created_by  String      @db.NVarChar(50)
-  created_at  DateTime?   @default(dbgenerated("sysdatetime()"), map: "DF__Requests__create__0EF836A4")
-  status      Int
-  Procedures  Procedures  @relation(fields: [proc_id], references: [proc_id], onUpdate: NoAction, map: "FK_Requests_Procedure")
-  UserAccount UserAccount @relation(fields: [created_by], references: [mits_uid], onUpdate: NoAction, map: "FK_Requests_User")
+  req_id     String   @id
+  proc_id    String
+  created_by String
+  created_at DateTime @default(now())
+  status     Int
 
-  @@index([created_by], map: "IDX_Requests_CreatedBy")
-  @@index([proc_id], map: "IDX_Requests_Procedure")
+  Procedures  Procedures  @relation(fields: [proc_id], references: [proc_id])
+  UserAccount UserAccount @relation(fields: [created_by], references: [mits_uid])
+
+  @@index([created_by])
+  @@index([proc_id])
 }
 
 model RoleMapping {
-  role_mapping_id Int         @id(map: "PK__RoleMapp__95B82AEF1A2B718A")
+  role_mapping_id Int     @id
   role_id         Int
-  mits_uid        String      @db.NVarChar(50)
-  is_active       Boolean     @default(true, map: "DF__RoleMappi__is_ac__6ABAD62E")
+  mits_uid        String
+  is_active       Boolean @default(true)
   deleted_at      DateTime?
-  Roles           Roles       @relation(fields: [role_id], references: [role_id], onUpdate: NoAction, map: "FK_RoleMapping_Role")
-  UserAccount     UserAccount @relation(fields: [mits_uid], references: [mits_uid], onUpdate: NoAction, map: "FK_RoleMapping_User")
 
-  @@index([is_active], map: "IDX_RoleMapping_Active")
-  @@index([mits_uid], map: "IDX_RoleMapping_User")
+  Roles       Roles       @relation(fields: [role_id], references: [role_id])
+  UserAccount UserAccount @relation(fields: [mits_uid], references: [mits_uid])
+
+  @@index([is_active])
+  @@index([mits_uid])
 }
 
 model Roles {
-  role_id      Int            @id(map: "PK__Roles__760965CC7A23A74E")
-  role_tag     String         @unique(map: "UQ__Roles__58B68BEF5A65C18E") @db.NVarChar(50)
-  role_desc    String?        @db.NVarChar(255)
-  is_active    Boolean        @default(true, map: "DF__Roles__is_active__4C364F0E")
-  deleted_at   DateTime?
+  role_id    Int     @id
+  role_tag   String  @unique
+  role_desc  String?
+  is_active  Boolean @default(true)
+  deleted_at DateTime?
+
   Analytics    Analytics[]
   ClassFaculty ClassFaculty[]
   ClubAdmin    ClubAdmin[]
   Clubs        Clubs[]
   RoleMapping  RoleMapping[]
 
-  @@index([is_active], map: "IDX_Roles_Active")
+  @@index([is_active])
 }
 
 model Student {
-  mits_uid    String      @id(map: "PK__Student__DE14EEAD83A4A420") @db.NVarChar(50)
-  name        String      @db.NVarChar(100)
-  batch_id    Int
-  class_id    Int
-  hosteller   Boolean
-  gender      String?     @db.Char(1)
-  phone       String?     @unique(map: "UQ__Student__B43B145FB89C827F") @db.NVarChar(15)
-  is_active   Boolean     @default(true, map: "DF__Student__is_acti__59904A2C")
-  deleted_at  DateTime?
-  Batches     Batches     @relation(fields: [batch_id], references: [batch_id], onUpdate: NoAction, map: "FK_Student_Batch")
-  Classes     Classes     @relation(fields: [class_id], references: [class_id], onUpdate: NoAction, map: "FK_Student_Class")
-  UserAccount UserAccount @relation(fields: [mits_uid], references: [mits_uid], onUpdate: NoAction, map: "FK_Student_User")
+  mits_uid   String  @id
+  name       String
+  batch_id   Int
+  class_id   Int
+  hosteller  Boolean
+  gender     String?
+  phone      String? @unique
+  is_active  Boolean @default(true)
+  deleted_at DateTime?
 
-  @@index([is_active], map: "IDX_Student_Active")
-  @@index([class_id], map: "IDX_Student_Class")
+  Batches     Batches     @relation(fields: [batch_id], references: [batch_id])
+  Classes     Classes     @relation(fields: [class_id], references: [class_id])
+  UserAccount UserAccount @relation(fields: [mits_uid], references: [mits_uid])
+
+  @@index([is_active])
+  @@index([class_id])
 }
 
 model UserAccount {
-  mits_uid    String        @id(map: "PK_UserAccount") @db.NVarChar(50)
-  auth_uid    String        @unique(map: "UQ_UserAccount_AuthUid") @db.NVarChar(100)
-  user_type   Int
-  is_active   Boolean       @default(true, map: "DF__UserAccou__is_ac__5006DFF2")
-  deleted_at  DateTime?
+  mits_uid   String  @id
+  auth_uid   String  @unique
+  user_type  Int
+  is_active  Boolean @default(true)
+  deleted_at DateTime?
+
   Faculty     Faculty?
+  Student     Student?
   Requests    Requests[]
   RoleMapping RoleMapping[]
-  Student     Student?
-  UserTypes   UserTypes     @relation(fields: [user_type], references: [user_type_id], onUpdate: NoAction, map: "FK_UserAccount_UserType")
+  UserTypes   UserTypes @relation(fields: [user_type], references: [user_type_id])
 
-  @@index([is_active], map: "IDX_UserAccount_Active")
-  @@index([user_type], map: "IDX_UserAccount_UserType")
+  @@index([is_active])
+  @@index([user_type])
 }
 
 model UserTypes {
-  user_type_id  Int           @id(map: "PK__UserType__9424CFA633309B42")
-  user_type_tag String        @unique(map: "UQ__UserType__5E665914D4969DEE") @db.NVarChar(50)
-  description   String?       @db.NVarChar(255)
-  is_active     Boolean       @default(true, map: "DF__UserTypes__is_ac__42ACE4D4")
-  UserAccount   UserAccount[]
+  user_type_id  Int     @id
+  user_type_tag String  @unique
+  description   String?
+  is_active     Boolean @default(true)
+
+  UserAccount UserAccount[]
 }
