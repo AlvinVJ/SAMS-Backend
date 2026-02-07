@@ -1,216 +1,164 @@
 import { prisma } from "../db/prisma.js";
-import { firebaseAuth, firestore } from "../config/firebase.js";
-import admin from "../config/firebase.js";
+import { firestore } from "../config/firebase.js";
 
 interface Result {
-    success: boolean;
-    statusCode: number;
-    message: string;
-    data?: any;
+  success: boolean;
+  statusCode: number;
+  message: string;
+  data?: any;
 }
 
-interface inputPayload {
-  headers: {
-    authorization?: string | undefined;
-  };
-  body: {
-    procedure?: any;
-    requestId?: string;
-    role?: string;
-    comments?: string;
-    reason?: string;
-  };
-  user: any;
+// FIX: Helper to get name from UID
+async function getUserNameFromUid(uid: string): Promise<string> {
+  const account = await prisma.userAccount.findUnique({
+    where: { mits_uid: uid },
+    include: { Faculty: true, Student: true },
+  });
+  if (account?.Faculty?.name) return account.Faculty.name;
+  if (account?.Student?.name) return account.Student.name;
+  return "Unknown User";
 }
 
-async function resolveApproversForRole(
-  roleTag: string,
-  requesterUid: string
-): Promise<string[]> {
-  console.log(`[RESOLVE] Tag: ${roleTag}, Requester: ${requesterUid}`);
-  if (roleTag === "class_advisor") {
+// Helper: Resolve Approvers
+async function resolveApproversForRole(roleTag: string, requesterUid: string): Promise<string[]> {
+  const normalizedTag = roleTag.toLowerCase();
+  if (normalizedTag === "class_advisor") {
     const student = await prisma.student.findUnique({
       where: { mits_uid: requesterUid },
       select: { class_id: true },
     });
-
-    if (!student) return [];
-
+    if (!student || !student.class_id) return [];
     const advisors = await prisma.classFaculty.findMany({
       where: {
         class_id: student.class_id,
-        role_tag: "class_advisor",
+        role_tag: { equals: "class_advisor", mode: 'insensitive' },
         is_active: true,
         deleted_at: null,
       },
       select: { mits_uid: true },
     });
-
     return advisors.map(a => a.mits_uid);
   }
-
-  const role = await prisma.roles.findUnique({
-    where: { role_tag: roleTag },
+  const role = await prisma.roles.findFirst({
+    where: { role_tag: { equals: normalizedTag, mode: 'insensitive' } },
     select: { role_id: true },
   });
-
   if (!role) return [];
-
   const mappings = await prisma.roleMapping.findMany({
-    where: {
-      role_id: role.role_id,
-      is_active: true,
-      deleted_at: null,
-    },
+    where: { role_id: role.role_id, is_active: true, deleted_at: null },
     select: { mits_uid: true },
   });
-
   return mappings.map(m => m.mits_uid);
 }
 
-export async function getRequestsToApproveService(
-  payload: inputPayload
-) {
+export async function getRequestsToApproveService(payload: any) {
   try {
-    const { mits_uid, role } = payload.user;
-    console.log(`[FACULTY_DEBUG] Logged in as: ${mits_uid} (Role: ${role})`);
+    const { mits_uid, role: userType } = payload.user;
+    const selectedRole = (payload.query?.role as string)?.toLowerCase();
 
-    /* ---------------------------------- */
-    /* 1️⃣ Authorization check            */
-    /* ---------------------------------- */
-    if (role !== "faculty" && role !== "admin") {
-      console.log(`[FACULTY_DEBUG] Denied: User role is ${role}`);
-      return {
-        success: false,
-        statusCode: 403,
-        message: "Not authorized to approve requests",
-      };
+    if (!selectedRole) {
+      return { success: false, statusCode: 400, message: "Role parameter is required" };
     }
 
-    /* ---------------------------------- */
-    /* 2️⃣ Fetch pending requests (SQL)   */
-    /* ---------------------------------- */
     const pendingRequests = await prisma.requests.findMany({
-      where: {
-        status: 0, // PENDING
-      },
+      where: { status: 0 },
       include: {
-        Procedures: {
-          select: {
-            title: true,
-          },
-        },
+        Procedures: true,
+        UserAccount: {
+          include: {
+            Student: {
+              include: {
+                Classes: {
+                  include: { Departments: true }
+                }
+              }
+            }
+          }
+        }
       },
     });
 
-    console.log(`[FACULTY_DEBUG] Found ${pendingRequests.length} pending requests in SQL`);
-
     const approvableRequests: any[] = [];
 
-    /* ---------------------------------- */
-    /* 3️⃣ Walk each request (Firebase)   */
-    /* ---------------------------------- */
     for (const req of pendingRequests) {
-      console.log(`[FACULTY_DEBUG] --- Checking Request ${req.req_id} ---`);
+      const snap = await firestore.collection("requests").doc(req.req_id).get();
+      if (!snap.exists) continue;
+
+      const data = snap.data()!;
+      const currentLevel = data.current_level;
+
+      const procDoc = await firestore.collection("procedures").doc(req.proc_id).get();
+      const procedureDef = procDoc.exists ? procDoc.data() : null;
+      const levelDef = procedureDef?.approvalLevels?.find((l: any) => l.level === currentLevel);
+      const allowedRoles = (levelDef?.roleIds || [levelDef?.role] || []).map((r: string) => r?.toLowerCase());
+
+      if (!allowedRoles.includes(selectedRole)) continue;
+
+      // Extract Approval History
+      const approvalHistory: any[] = [];
+      const historyBlocks = (data.approval_progress || []).filter((lvl: any) => lvl.level < currentLevel);
       
-      const snap = await firestore
-        .collection("requests")
-        .doc(req.req_id)
-        .get();
+      for (const block of historyBlocks) {
+        const levelDefHistory = procedureDef?.approvalLevels?.find((l: any) => l.level === block.level);
+        const fallbackRole = levelDefHistory?.role || levelDefHistory?.roleIds?.[0] || "Approver";
 
-      if (!snap.exists) {
-        console.log(`[FACULTY_DEBUG] Skip: Firestore doc for ${req.req_id} NOT FOUND`);
-        continue;
+        for (const decision of block.decisions) {
+          if (decision.decision) {
+            const approverName = await getUserNameFromUid(decision.mits_uid);
+            approvalHistory.push({
+              level: block.level,
+              approverName: approverName,
+              role: (decision.role || block.role || fallbackRole).replaceAll('_', ' ').toUpperCase(),
+              status: decision.decision,
+              comments: decision.comments,
+              timestamp: decision.timestamp ? decision.timestamp.split('T')[0] : ""
+            });
+          }
+        }
       }
 
-      const data = snap.data();
-      if (!data) continue;
+      const levelBlock = data.approval_progress?.find((lvl: any) => lvl.level === currentLevel);
+      if (!levelBlock || levelBlock.net_status !== "PENDING") continue;
 
-      const currentLevel: number = data.current_level;
-      console.log(`[FACULTY_DEBUG] Current Level from DB: ${currentLevel}`);
+      const myDecisionEntry = levelBlock.decisions.find((d: any) => d.mits_uid === mits_uid);
+      if (!myDecisionEntry || myDecisionEntry.decision) continue;
 
-      const levelBlock = data.approval_progress?.find(
-        (lvl: any) => lvl.level === currentLevel
-      );
-
-      if (!levelBlock) {
-        console.log(`[FACULTY_DEBUG] Skip: No level block found for Level ${currentLevel}`);
-        console.log(`[FACULTY_DEBUG] Approval Progress available: ${JSON.stringify(data.approval_progress)}`);
-        continue;
+      let descriptionSummary = "";
+      if (data.formData) {
+           descriptionSummary = Object.entries(data.formData)
+             .map(([key, val]) => `${key}: ${val}`)
+             .join(" | ");
       }
 
-      /* ---------------------------------- */
-      /* 4️⃣ State-based eligibility check  */
-      /* ---------------------------------- */
-
-      // 1️⃣ Level must still be active
-      if (levelBlock.net_status !== "PENDING") {
-        console.log(`[FACULTY_DEBUG] Skip: Level status is ${levelBlock.net_status}`);
-        continue;
-      }
-
-      // 2️⃣ Find user's slot
-      const myDecisionEntry = levelBlock.decisions.find(
-        (d: any) => d.mits_uid === mits_uid
-      );
-
-      // 3️⃣ User must be an intended approver
-      if (!myDecisionEntry) {
-        console.log(`[FACULTY_DEBUG] Skip: My UID ${mits_uid} NOT in decisions list: ${JSON.stringify(levelBlock.decisions.map((d:any) => d.mits_uid))}`);
-        continue;
-      }
-
-      // 4️⃣ User must not have already acted
-      if (myDecisionEntry.decision) {
-        console.log(`[FACULTY_DEBUG] Skip: Already decided: ${myDecisionEntry.decision}`);
-        continue;
-      }
-
-      // 5️⃣ Level must still need approvals
-      const approvalsDone = levelBlock.decisions.filter(
-        (d: any) => d.decision
-      ).length;
-
-      if (approvalsDone >= levelBlock.required_approvals) {
-        console.log(`[FACULTY_DEBUG] Skip: Level already met requirements (${approvalsDone}/${levelBlock.required_approvals})`);
-        continue;
-      }
-
-      console.log(`[FACULTY_DEBUG] SUCCESS: Request ${req.req_id} added to list`);
-      
-      /* ---------------------------------- */
-      /* 5️⃣ Collect response               */
-      /* ---------------------------------- */
       approvableRequests.push({
-        request_id: req.req_id,
-        procedure_title: req.Procedures.title,
-        created_by: req.created_by,
-        current_level: currentLevel,
+        id: req.req_id,
+        type: req.Procedures?.title || "Request",
+        studentName: req.UserAccount?.Student?.name || data.studentName || "Unknown",
+        studentId: req.created_by,
+        department: req.UserAccount?.Student?.Classes?.Departments?.dept_name || "N/A",
+        date: req.created_at.toISOString().split("T")[0],
+        description: descriptionSummary || "No description provided.",
+        attachments: data.attachments || [],
+        roleTag: selectedRole,
+        color: "blue",
+        formData: data.formData || {},
+        approvalHistory: approvalHistory
       });
     }
 
-    /* ---------------------------------- */
-    /* 6️⃣ Return result                  */
-    /* ---------------------------------- */
     return {
       success: true,
       statusCode: 200,
-      message: "Pending approval requests fetched",
-      data: {
-        requests: approvableRequests,
-      },
+      message: "Pending requests fetched",
+      data: { requests: approvableRequests },
     };
-  } catch (error) {
+  } catch (error: any) {
     console.error("getRequestsToApproveService error:", error);
-    return {
-      success: false,
-      statusCode: 500,
-      message: "Internal server error",
-    };
+    return { success: false, statusCode: 500, message: "Internal server error" };
   }
 }
 
-export async function approveRequestService(payload: inputPayload): Promise<Result> {
+export async function approveRequestService(payload: any): Promise<Result> {
   try {
     const { mits_uid } = payload.user;
     const { requestId, role, comments } = payload.body;
@@ -237,39 +185,30 @@ export async function approveRequestService(payload: inputPayload): Promise<Resu
 
     const myDecision = levelBlock.decisions.find((d: any) => d.mits_uid === mits_uid);
     if (!myDecision) {
-      return { success: false, statusCode: 403, message: "You are not an authorized approver for this level" };
+      return { success: false, statusCode: 403, message: "Not authorized" };
     }
 
-    if (myDecision.decision) {
-      return { success: false, statusCode: 400, message: "You have already acted on this request" };
-    }
-
-    // Update individual decision
     myDecision.decision = "APPROVED";
     myDecision.timestamp = new Date().toISOString();
     myDecision.comments = comments || null;
+    myDecision.role = role; // NEW: Save acting role
 
-    // Check if level requirement is met
     const approvalsDone = levelBlock.decisions.filter((d: any) => d.decision === "APPROVED").length;
 
     if (approvalsDone >= levelBlock.required_approvals) {
       levelBlock.net_status = "APPROVED";
 
-      // Check for next level advancement
-      const procSnap = await firestore.collection("procedures").doc(data.procedure_id).get();
+      const procSnap = await firestore.collection("procedures").doc(data.procId || data.proc_id).get();
       const procedure = procSnap.data();
       const nextLevelNum = currentLevel + 1;
       const nextLevelDef = procedure?.approvalLevels?.find((l: any) => l.level === nextLevelNum);
 
       if (nextLevelDef) {
-        // Advance to next level
         data.current_level = nextLevelNum;
-
-        // Resolve approvers for next level
         let nextApprovers: string[] = [];
         const roleIds = nextLevelDef.roleIds || [nextLevelDef.role]; 
         for (const roleTag of roleIds) {
-          const uids = await resolveApproversForRole(roleTag, data.created_by);
+          const uids = await resolveApproversForRole(roleTag, data.studentId || data.created_by);
           nextApprovers.push(...uids);
         }
         nextApprovers = [...new Set(nextApprovers)];
@@ -281,11 +220,10 @@ export async function approveRequestService(payload: inputPayload): Promise<Resu
           decisions: nextApprovers.map(uid => ({ mits_uid: uid }))
         });
       } else {
-        // Final approval
         data.status = "APPROVED";
         await prisma.requests.update({
           where: { req_id: requestId },
-          data: { status: 1 } // 1 = APPROVED
+          data: { status: 1 } 
         });
       }
     }
@@ -297,14 +235,14 @@ export async function approveRequestService(payload: inputPayload): Promise<Resu
       last_updated_at: new Date().toISOString()
     });
 
-    return { success: true, statusCode: 200, message: "Request approved successfully" };
+    return { success: true, statusCode: 200, message: "Request approved" };
   } catch (error) {
     console.error("approveRequestService error:", error);
     return { success: false, statusCode: 500, message: "Internal server error" };
   }
 }
 
-export async function rejectRequestService(payload: inputPayload): Promise<Result> {
+export async function rejectRequestService(payload: any): Promise<Result> {
   try {
     const { mits_uid } = payload.user;
     const { requestId, role, reason } = payload.body;
@@ -320,21 +258,6 @@ export async function rejectRequestService(payload: inputPayload): Promise<Resul
       return { success: false, statusCode: 404, message: "Request not found" };
     }
 
-    const data = snap.data()!;
-    const approvalProgress = data.approval_progress || [];
-    const currentLevel = data.current_level;
-
-    const levelBlock = approvalProgress.find((lvl: any) => lvl.level === currentLevel);
-    if (!levelBlock) {
-      return { success: false, statusCode: 400, message: "Level not found" };
-    }
-
-    const myDecision = levelBlock.decisions.find((d: any) => d.mits_uid === mits_uid);
-    if (!myDecision) {
-      return { success: false, statusCode: 403, message: "You are not an authorized approver for this level" };
-    }
-
-    // Update Firestore to REJECTED
     await requestRef.update({
       status: "REJECTED",
       rejection_info: {
@@ -346,13 +269,12 @@ export async function rejectRequestService(payload: inputPayload): Promise<Resul
       last_updated_at: new Date().toISOString()
     });
 
-    // Update SQL to REJECTED
     await prisma.requests.update({
       where: { req_id: requestId },
-      data: { status: 2 } // 2 = REJECTED
+      data: { status: 2 } 
     });
 
-    return { success: true, statusCode: 200, message: "Request rejected successfully" };
+    return { success: true, statusCode: 200, message: "Request rejected" };
   } catch (error) {
     console.error("rejectRequestService error:", error);
     return { success: false, statusCode: 500, message: "Internal server error" };
