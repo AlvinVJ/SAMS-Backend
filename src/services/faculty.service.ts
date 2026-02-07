@@ -27,7 +27,7 @@ async function resolveApproversForRole(
   roleTag: string,
   requesterUid: string
 ): Promise<string[]> {
-  console.log(roleTag, requesterUid);
+  console.log(`[RESOLVE] Tag: ${roleTag}, Requester: ${requesterUid}`);
   if (roleTag === "class_advisor") {
     const student = await prisma.student.findUnique({
       where: { mits_uid: requesterUid },
@@ -73,11 +73,13 @@ export async function getRequestsToApproveService(
 ) {
   try {
     const { mits_uid, role } = payload.user;
+    console.log(`[FACULTY_DEBUG] Logged in as: ${mits_uid} (Role: ${role})`);
 
     /* ---------------------------------- */
     /* 1️⃣ Authorization check            */
     /* ---------------------------------- */
     if (role !== "faculty" && role !== "admin") {
+      console.log(`[FACULTY_DEBUG] Denied: User role is ${role}`);
       return {
         success: false,
         statusCode: 403,
@@ -101,37 +103,51 @@ export async function getRequestsToApproveService(
       },
     });
 
+    console.log(`[FACULTY_DEBUG] Found ${pendingRequests.length} pending requests in SQL`);
+
     const approvableRequests: any[] = [];
 
     /* ---------------------------------- */
     /* 3️⃣ Walk each request (Firebase)   */
     /* ---------------------------------- */
     for (const req of pendingRequests) {
+      console.log(`[FACULTY_DEBUG] --- Checking Request ${req.req_id} ---`);
+      
       const snap = await firestore
         .collection("requests")
         .doc(req.req_id)
         .get();
 
-      if (!snap.exists) continue;
+      if (!snap.exists) {
+        console.log(`[FACULTY_DEBUG] Skip: Firestore doc for ${req.req_id} NOT FOUND`);
+        continue;
+      }
 
       const data = snap.data();
       if (!data) continue;
 
       const currentLevel: number = data.current_level;
+      console.log(`[FACULTY_DEBUG] Current Level from DB: ${currentLevel}`);
 
       const levelBlock = data.approval_progress?.find(
         (lvl: any) => lvl.level === currentLevel
       );
 
-      if (!levelBlock) continue;
+      if (!levelBlock) {
+        console.log(`[FACULTY_DEBUG] Skip: No level block found for Level ${currentLevel}`);
+        console.log(`[FACULTY_DEBUG] Approval Progress available: ${JSON.stringify(data.approval_progress)}`);
+        continue;
+      }
 
       /* ---------------------------------- */
       /* 4️⃣ State-based eligibility check  */
       /* ---------------------------------- */
 
-      // level must still need approvals
       // 1️⃣ Level must still be active
-      if (levelBlock.net_status !== "PENDING") continue;
+      if (levelBlock.net_status !== "PENDING") {
+        console.log(`[FACULTY_DEBUG] Skip: Level status is ${levelBlock.net_status}`);
+        continue;
+      }
 
       // 2️⃣ Find user's slot
       const myDecisionEntry = levelBlock.decisions.find(
@@ -139,18 +155,28 @@ export async function getRequestsToApproveService(
       );
 
       // 3️⃣ User must be an intended approver
-      if (!myDecisionEntry) continue;
+      if (!myDecisionEntry) {
+        console.log(`[FACULTY_DEBUG] Skip: My UID ${mits_uid} NOT in decisions list: ${JSON.stringify(levelBlock.decisions.map((d:any) => d.mits_uid))}`);
+        continue;
+      }
 
       // 4️⃣ User must not have already acted
-      if (myDecisionEntry.decision) continue;
+      if (myDecisionEntry.decision) {
+        console.log(`[FACULTY_DEBUG] Skip: Already decided: ${myDecisionEntry.decision}`);
+        continue;
+      }
 
       // 5️⃣ Level must still need approvals
       const approvalsDone = levelBlock.decisions.filter(
         (d: any) => d.decision
       ).length;
 
-      if (approvalsDone >= levelBlock.required_approvals) continue;
+      if (approvalsDone >= levelBlock.required_approvals) {
+        console.log(`[FACULTY_DEBUG] Skip: Level already met requirements (${approvalsDone}/${levelBlock.required_approvals})`);
+        continue;
+      }
 
+      console.log(`[FACULTY_DEBUG] SUCCESS: Request ${req.req_id} added to list`);
       
       /* ---------------------------------- */
       /* 5️⃣ Collect response               */
@@ -176,7 +202,6 @@ export async function getRequestsToApproveService(
     };
   } catch (error) {
     console.error("getRequestsToApproveService error:", error);
-
     return {
       success: false,
       statusCode: 500,
@@ -242,7 +267,8 @@ export async function approveRequestService(payload: inputPayload): Promise<Resu
 
         // Resolve approvers for next level
         let nextApprovers: string[] = [];
-        for (const roleTag of nextLevelDef.roleIds || []) {
+        const roleIds = nextLevelDef.roleIds || [nextLevelDef.role]; 
+        for (const roleTag of roleIds) {
           const uids = await resolveApproversForRole(roleTag, data.created_by);
           nextApprovers.push(...uids);
         }
@@ -251,7 +277,7 @@ export async function approveRequestService(payload: inputPayload): Promise<Resu
         approvalProgress.push({
           level: nextLevelNum,
           net_status: "PENDING",
-          required_approvals: nextLevelDef.allMustApprove ? nextApprovers.length : nextLevelDef.minApprovals,
+          required_approvals: nextLevelDef.allMustApprove ? nextApprovers.length : (nextLevelDef.minApprovals || 1),
           decisions: nextApprovers.map(uid => ({ mits_uid: uid }))
         });
       } else {

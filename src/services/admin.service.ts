@@ -150,3 +150,327 @@ export async function saveProcedureDef(payload: inputPayload): Promise<Result> {
     };
   }
 }
+
+// ============================================
+// GET ALL PROCEDURES
+// ============================================
+export async function getProcedures(payload: { user: any }): Promise<Result> {
+  try {
+    // Fetch procedures from SQL
+    const procedures = await prisma.procedures.findMany({
+      where: {
+        is_active: true,
+        deleted_at: null,
+      },
+      orderBy: {
+        proc_id: 'desc', // Most recent first
+      },
+    });
+
+    // For each procedure, fetch approval levels count from Firestore
+    const proceduresWithDetails = await Promise.all(
+      procedures.map(async (proc) => {
+        try {
+          const firestoreDoc = await firestore
+            .collection("procedures")
+            .doc(proc.proc_id)
+            .get();
+
+          const firestoreData = firestoreDoc.data();
+          const approvalLevelsCount = firestoreData?.approvalLevels?.length || 0;
+
+          return {
+            proc_id: proc.proc_id,
+            title: proc.title,
+            description: proc.desc_first_50_char,
+            approval_levels_count: approvalLevelsCount,
+            created_by: proc.created_by,
+            is_active: proc.is_active,
+          };
+        } catch (err) {
+          console.error(`Error fetching Firestore data for ${proc.proc_id}:`, err);
+          return {
+            proc_id: proc.proc_id,
+            title: proc.title,
+            description: proc.desc_first_50_char,
+            approval_levels_count: 0,
+            created_by: proc.created_by,
+            is_active: proc.is_active,
+          };
+        }
+      })
+    );
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Procedures fetched successfully",
+      data: {
+        procedures: proceduresWithDetails,
+      },
+    };
+  } catch (error) {
+    console.error("getProcedures error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
+}
+
+// ============================================
+// GET SINGLE PROCEDURE BY ID
+// ============================================
+// ============================================
+// GET SINGLE PROCEDURE BY ID
+// ============================================
+export async function getProcedureById(payload: {
+  procedureId: string;
+  user: any;
+}): Promise<Result> {
+  try {
+    const { procedureId } = payload;
+
+    // Check if procedure exists in SQL
+    const procedure = await prisma.procedures.findUnique({
+      where: { proc_id: procedureId },
+    });
+
+    if (!procedure) {
+      return {
+        success: false,
+        statusCode: 404,
+        message: "Procedure not found",
+      };
+    }
+
+    if (!procedure.is_active || procedure.deleted_at) {
+      return {
+        success: false,
+        statusCode: 404,
+        message: "Procedure has been deleted",
+      };
+    }
+
+    // Fetch full procedure from Firestore
+    const firestoreDoc = await firestore
+      .collection("procedures")
+      .doc(procedureId)
+      .get();
+
+    if (!firestoreDoc.exists) {
+      return {
+        success: false,
+        statusCode: 404,
+        message: "Procedure definition not found",
+      };
+    }
+
+    const firestoreData = firestoreDoc.data();
+
+    // Fetch visibility settings (without include)
+    const visibilityRecords = await prisma.procedureVisibility.findMany({
+      where: { proc_id: procedureId },
+    });
+
+    // Fetch user types separately
+    const userTypeIds = visibilityRecords.map(v => v.user_type);
+    const userTypes = await prisma.userTypes.findMany({
+      where: {
+        user_type_id: { in: userTypeIds }
+      }
+    });
+
+    const visibility = userTypes.map((ut) => 
+      ut.user_type_tag.toLowerCase()
+    );
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Procedure fetched successfully",
+      data: {
+        procedure: {
+          proc_id: procedureId,
+          title: firestoreData?.title || procedure.title,
+          description: firestoreData?.desc || "",
+          formFields: firestoreData?.formFields || [],
+          approvalLevels: firestoreData?.approvalLevels || [],
+          visibility: visibility,
+        },
+      },
+    };
+  } catch (error) {
+    console.error("getProcedureById error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
+}
+// ============================================
+// UPDATE PROCEDURE
+// ============================================
+export async function updateProcedure(payload: {
+  procedureId: string;
+  body: any;
+  user: any;
+}): Promise<Result> {
+  try {
+    const { procedureId, body } = payload;
+    const { title, desc, formFields, approvalLevels, visibility } = body.procedure;
+
+    // Check if procedure exists
+    const existingProcedure = await prisma.procedures.findUnique({
+      where: { proc_id: procedureId },
+    });
+
+    if (!existingProcedure) {
+      return {
+        success: false,
+        statusCode: 404,
+        message: "Procedure not found",
+      };
+    }
+
+    if (!existingProcedure.is_active || existingProcedure.deleted_at) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "Cannot update deleted procedure",
+      };
+    }
+
+    // Update Firestore
+    await firestore
+      .collection("procedures")
+      .doc(procedureId)
+      .update({
+        title,
+        desc,
+        formFields,
+        approvalLevels,
+        visibility,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+    // Update SQL metadata
+    await prisma.procedures.update({
+      where: { proc_id: procedureId },
+      data: {
+        title: title,
+        desc_first_50_char: JSON.stringify(desc).slice(0, 50),
+      },
+    });
+
+    // Update visibility
+    // First, delete existing visibility records
+    await prisma.procedureVisibility.deleteMany({
+      where: { proc_id: procedureId },
+    });
+
+    // Then, create new visibility records
+    const userTypes = await prisma.userTypes.findMany({
+      where: { is_active: true },
+    });
+
+    let allowedUserTypes;
+    if (visibility.includes("all")) {
+      allowedUserTypes = userTypes;
+    } else {
+      const tags = visibility.map((v: string) => v.toUpperCase());
+      allowedUserTypes = userTypes.filter((ut) =>
+        tags.includes(ut.user_type_tag)
+      );
+    }
+
+    await prisma.procedureVisibility.createMany({
+      data: allowedUserTypes.map((ut) => ({
+        proc_id: procedureId,
+        user_type: ut.user_type_id,
+      })),
+    });
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Procedure updated successfully",
+      data: {
+        proc_id: procedureId,
+      },
+    };
+  } catch (error) {
+    console.error("updateProcedure error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
+}
+
+// ============================================
+// DELETE PROCEDURE (SOFT DELETE)
+// ============================================
+export async function deleteProcedure(payload: {
+  procedureId: string;
+  user: any;
+}): Promise<Result> {
+  try {
+    const { procedureId } = payload;
+
+    // Check if procedure exists
+    const existingProcedure = await prisma.procedures.findUnique({
+      where: { proc_id: procedureId },
+    });
+
+    if (!existingProcedure) {
+      return {
+        success: false,
+        statusCode: 404,
+        message: "Procedure not found",
+      };
+    }
+
+    if (!existingProcedure.is_active) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "Procedure already deleted",
+      };
+    }
+
+    // Soft delete in SQL
+    await prisma.procedures.update({
+      where: { proc_id: procedureId },
+      data: {
+        is_active: false,
+        deleted_at: new Date(),
+      },
+    });
+
+    // Mark as deleted in Firestore
+    await firestore
+      .collection("procedures")
+      .doc(procedureId)
+      .update({
+        is_active: false,
+        deleted_at: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Procedure deleted successfully",
+    };
+  } catch (error) {
+    console.error("deleteProcedure error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
+}
