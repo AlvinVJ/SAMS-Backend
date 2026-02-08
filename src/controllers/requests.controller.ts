@@ -23,3 +23,13 @@ export async function getMyRequests(req: Request, res: Response) {
     return res.status(500).json({ success: false, message: "Internal server error" });
   }
 }
+
+export async function getStudentDashboardData(req: Request, res: Response) {
+  try {
+    const result = await RequestsService.getStudentDashboardData(req.user);
+    return res.status(result.statusCode).json(result);
+  } catch (err) {
+    console.error("getStudentDashboardData controller error:", err);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+}

@@ -1,14 +1,14 @@
 import { Router } from "express";
-import { createRequest, getMyRequests } from "../controllers/requests.controller.js";
+import { createRequest, getMyRequests, getStudentDashboardData } from "../controllers/requests.controller.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { requireRole } from "../middleware/requireRole.js";
 
 export const requestsRouter = Router();
 
 requestsRouter.post(
-  "/create", 
+  "/create",
   requireAuth,
-  requireRole("student"), 
+  requireRole("student"),
   createRequest
 );
 
@@ -17,4 +17,11 @@ requestsRouter.get(
   requireAuth,
   requireRole("student"),
   getMyRequests
+);
+
+requestsRouter.get(
+  "/dashboard_data",
+  requireAuth,
+  requireRole("student"),
+  getStudentDashboardData
 );

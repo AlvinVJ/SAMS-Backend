@@ -12,13 +12,23 @@ const generateId = () => Date.now().toString(36) + Math.random().toString(36).su
 
 // Helper: Resolve Name from UID
 async function getUserNameFromUid(uid: string): Promise<string> {
-    const account = await prisma.userAccount.findUnique({
-      where: { mits_uid: uid },
-      include: { Faculty: true, Student: true },
-    });
-    if (account?.Faculty?.name) return account.Faculty.name;
-    if (account?.Student?.name) return account.Student.name;
-    return "Unknown User";
+  const account = await prisma.userAccount.findUnique({
+    where: { mits_uid: uid },
+    include: { Faculty: true, Student: true },
+  });
+  if (account?.Faculty?.name) return account.Faculty.name;
+  if (account?.Student?.name) return account.Student.name;
+  return "Unknown User";
+}
+
+// Helper: Resolve Status Text and Color
+async function resolveRequestStatus(req: any, procData: any, currentLevel: number): Promise<{ text: string, color: string }> {
+  if (req.status === 1) return { text: "Approved", color: "success" };
+  if (req.status === 2) return { text: "Rejected", color: "error" };
+
+  const activeLevel = procData?.approvalLevels?.find((l: any) => l.level === currentLevel);
+  const roleName = (activeLevel?.role || activeLevel?.roleIds?.[0] || "Approver").replaceAll('_', ' ').toUpperCase();
+  return { text: `Pending ${roleName}`, color: "warning" };
 }
 
 // Helper: Resolve Approvers
@@ -155,68 +165,60 @@ export async function getMyRequests(user: any): Promise<Result> {
 
       const snap = await firestore.collection("requests").doc(req.req_id).get();
       if (snap.exists) {
-          const data = snap.data()!;
-          current_level = data.current_level || 1;
-          
-          const procDoc = await firestore.collection("procedures").doc(req.proc_id).get();
-          const procData = procDoc.exists ? procDoc.data() : null;
-          total_levels = procData?.approvalLevels?.length || 1;
+        const data = snap.data()!;
+        current_level = data.current_level || 1;
 
-          if (req.status === 1) {
-              status_text = "Approved";
-              color = "success";
-          } else if (req.status === 2) {
-              status_text = "Rejected";
-              color = "error";
-          } else {
-              const activeLevel = procData?.approvalLevels?.find((l: any) => l.level === current_level);
-              const roleName = (activeLevel?.role || activeLevel?.roleIds?.[0] || "Approver").replaceAll('_', ' ').toUpperCase();
-              status_text = `Pending ${roleName}`;
+        const procDoc = await firestore.collection("procedures").doc(req.proc_id).get();
+        const procData = procDoc.exists ? procDoc.data() : null;
+        total_levels = procData?.approvalLevels?.length || 1;
+
+        const statusResult = await resolveRequestStatus(req, procData, current_level);
+        status_text = statusResult.text;
+        color = statusResult.color;
+
+        const historyBlocks = (data.approval_progress || []);
+        for (const block of historyBlocks) {
+          const levelDefHistory = procData?.approvalLevels?.find((l: any) => l.level === block.level);
+          const fallbackRole = levelDefHistory?.role || levelDefHistory?.roleIds?.[0] || "Approver";
+          for (const decision of block.decisions) {
+            if (decision.decision) {
+              const histEntry = {
+                level: block.level,
+                approverName: await getUserNameFromUid(decision.mits_uid),
+                role: (decision.role || block.role || fallbackRole).replaceAll('_', ' ').toUpperCase(),
+                status: decision.decision,
+                comments: decision.comments,
+                timestamp: decision.timestamp ? decision.timestamp.split('T')[0] : ""
+              };
+              console.log(`[DEBUG] History entry for ${req.req_id} level ${block.level}:`, histEntry);
+              approvalHistory.push(histEntry);
+            }
           }
+        }
+        const userData = await prisma.userAccount.findUnique({
+          where: { mits_uid: req.created_by },
+          include: { Student: { include: { Classes: { include: { Departments: true } } } } }
+        });
 
-          const historyBlocks = (data.approval_progress || []);
-          for (const block of historyBlocks) {
-              const levelDefHistory = procData?.approvalLevels?.find((l: any) => l.level === block.level);
-              const fallbackRole = levelDefHistory?.role || levelDefHistory?.roleIds?.[0] || "Approver";
-              for (const decision of block.decisions) {
-                  if (decision.decision) {
-                      const histEntry = {
-                          level: block.level,
-                          approverName: await getUserNameFromUid(decision.mits_uid),
-                          role: (decision.role || block.role || fallbackRole).replaceAll('_', ' ').toUpperCase(),
-                          status: decision.decision,
-                          comments: decision.comments,
-                          timestamp: decision.timestamp ? decision.timestamp.split('T')[0] : ""
-                      };
-                      console.log(`[DEBUG] History entry for ${req.req_id} level ${block.level}:`, histEntry);
-                      approvalHistory.push(histEntry);
-                  }
-              }
-          }
-          const userData = await prisma.userAccount.findUnique({
-              where: { mits_uid: req.created_by },
-              include: { Student: { include: { Classes: { include: { Departments: true } } } } }
-          });
-
-          formatted.push({
-              req_id: req.req_id,
-              procedure_title: req.Procedures?.title || "Unknown Request",
-              created_at: req.created_at,
-              status: req.status, 
-              status_text,
-              color,
-              current_level,
-              total_levels,
-              approvalHistory,
-              formData: data.formData || {},
-              studentName: userData?.Student?.name || data.studentName || "Unknown",
-              studentId: req.created_by,
-              department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
-          });
-          console.log(`[DEBUG] Final formatted request ${req.req_id}:`, {
-              status: status_text,
-              historyCount: approvalHistory.length
-          });
+        formatted.push({
+          req_id: req.req_id,
+          procedure_title: req.Procedures?.title || "Unknown Request",
+          created_at: req.created_at,
+          status: req.status,
+          status_text,
+          color,
+          current_level,
+          total_levels,
+          approvalHistory,
+          formData: data.formData || {},
+          studentName: userData?.Student?.name || data.studentName || "Unknown",
+          studentId: req.created_by,
+          department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
+        });
+        console.log(`[DEBUG] Final formatted request ${req.req_id}:`, {
+          status: status_text,
+          historyCount: approvalHistory.length
+        });
       }
     }
 
@@ -226,3 +228,65 @@ export async function getMyRequests(user: any): Promise<Result> {
     return { success: false, statusCode: 500, message: "Internal server error" };
   }
 }
+
+export async function getStudentDashboardData(user: any): Promise<Result> {
+  try {
+    const userAccount = await prisma.userAccount.findUnique({ where: { auth_uid: user.uid } });
+    if (!userAccount) return { success: false, statusCode: 404, message: "User not found" };
+
+    const mits_uid = userAccount.mits_uid;
+
+    // 1. Fetch Stats
+    const [pendingCount, approvedCount, rejectedCount] = await Promise.all([
+      prisma.requests.count({ where: { created_by: mits_uid, status: 0 } }),
+      prisma.requests.count({ where: { created_by: mits_uid, status: 1 } }),
+      prisma.requests.count({ where: { created_by: mits_uid, status: 2 } }),
+    ]);
+
+    // 2. Fetch Latest Requests (Latest 3)
+    const latestRequestsRaw = await prisma.requests.findMany({
+      where: { created_by: mits_uid },
+      include: { Procedures: true },
+      orderBy: { created_at: 'desc' },
+      take: 3,
+    });
+
+    const activeRequests = [];
+    for (const req of latestRequestsRaw) {
+      const snap = await firestore.collection("requests").doc(req.req_id).get();
+      if (snap.exists) {
+        const data = snap.data()!;
+        const procDoc = await firestore.collection("procedures").doc(req.proc_id).get();
+        const procData = procDoc.exists ? procDoc.data() : null;
+
+        const { text: status } = await resolveRequestStatus(req, procData, data.current_level || 1);
+
+        activeRequests.push({
+          id: req.req_id,
+          title: req.Procedures?.title || "Unknown Request",
+          date: req.created_at.toISOString().split('T')[0],
+          status: status,
+          currentLevel: data.current_level || 1,
+        });
+      }
+    }
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Dashboard data fetched",
+      data: {
+        stats: { pending: pendingCount, approved: approvedCount, rejected: rejectedCount },
+        activeRequests,
+        notifications: [
+          // Placeholder for now, can be implemented with a real notification system later
+          { id: "1", title: "Welcome to SAMS", description: "Your dashboard is now live with real data.", time: "Just now", type: "info" }
+        ]
+      }
+    };
+  } catch (error: any) {
+    console.error("getStudentDashboardData error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
