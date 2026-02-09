@@ -28,11 +28,21 @@ export async function approveRequest(req: Request, res: Response) {
 }
 
 export const getActedRequests = async (req: Request, res: Response) => {
-    try {
-        const result = await FacultyService.getActedRequestsService((req as any).user);
-        res.status(result.statusCode).json(result);
-    } catch (error) {
-        console.error("getActedRequests controller error:", error);
-        res.status(500).json({ success: false, message: "Internal server error" });
-    }
+  try {
+    const result = await FacultyService.getActedRequestsService((req as any).user);
+    res.status(result.statusCode).json(result);
+  } catch (error) {
+    console.error("getActedRequests controller error:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+}
+
+export const getDashboardData = async (req: Request, res: Response) => {
+  try {
+    const result = await FacultyService.getFacultyDashboardDataService((req as any).user, req.query);
+    res.status(result.statusCode).json(result);
+  } catch (error) {
+    console.error("getDashboardData controller error:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
 }

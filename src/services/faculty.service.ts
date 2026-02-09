@@ -51,8 +51,9 @@ async function resolveApproversForRole(roleTag: string, requesterUid: string): P
 
 export async function getRequestsToApproveService(payload: any) {
   try {
-    const { mits_uid } = payload.user;
-    const selectedRole = (payload.query?.role as string)?.toLowerCase();
+    const mits_uid = (payload.user.mits_uid as string);
+    const normalizedFacultyUid = mits_uid.trim().toLowerCase();
+    const selectedRole = (payload.query?.role as string)?.trim().toLowerCase();
 
     if (!selectedRole) {
       return { success: false, statusCode: 400, message: "Role parameter is required" };
@@ -88,9 +89,16 @@ export async function getRequestsToApproveService(payload: any) {
       const procDoc = await firestore.collection("procedures").doc(req.proc_id).get();
       const procedureDef = procDoc.exists ? procDoc.data() : null;
       const levelDef = procedureDef?.approvalLevels?.find((l: any) => l.level === currentLevel);
-      const allowedRoles = (levelDef?.roleIds || [levelDef?.role] || []).map((r: string) => r?.toLowerCase());
+      const allowedRoles = (levelDef?.roleIds || [levelDef?.role] || []).filter(Boolean).map((r: string) => r.trim().toLowerCase());
 
-      if (!allowedRoles.includes(selectedRole)) continue;
+      // If filtering by a specific role (not "all"), must be in allowed roles
+      if (selectedRole !== "all" && !allowedRoles.includes(selectedRole)) continue;
+
+      // Ensure the faculty is actually an approver for this request at the current level
+      const currentLevelBlock = data.approval_progress?.find((lvl: any) => lvl.level === currentLevel);
+      const isApproverAtThisLevel = currentLevelBlock?.decisions?.some((d: any) => d.mits_uid?.trim().toLowerCase() === normalizedFacultyUid);
+
+      if (!isApproverAtThisLevel) continue;
 
       const approvalHistory: any[] = [];
       const historyBlocks = (data.approval_progress || []).filter((lvl: any) => lvl.level < currentLevel);
@@ -113,7 +121,8 @@ export async function getRequestsToApproveService(payload: any) {
 
       const levelBlock = data.approval_progress?.find((lvl: any) => lvl.level === currentLevel);
       if (!levelBlock || levelBlock.net_status !== "PENDING") continue;
-      if (levelBlock.decisions.find((d: any) => d.mits_uid === mits_uid && d.decision)) continue;
+      // Skip if they already acted in THIS level
+      if (levelBlock.decisions.find((d: any) => d.mits_uid?.trim().toLowerCase() === normalizedFacultyUid && d.decision)) continue;
 
       approvableRequests.push({
         id: req.req_id,
@@ -140,8 +149,11 @@ export async function getRequestsToApproveService(payload: any) {
 
 export async function approveRequestService(payload: any): Promise<Result> {
   try {
-    const { mits_uid } = payload.user;
+    const mits_uid = (payload.user.mits_uid as string);
+    const normalizedFacultyUid = mits_uid.trim().toLowerCase();
     const { requestId, role, comments } = payload.body;
+    const normalizedRole = (role as string)?.trim().toLowerCase();
+
     const requestRef = firestore.collection("requests").doc(requestId);
     const snap = await requestRef.get();
     if (!snap.exists) return { success: false, statusCode: 404, message: "Request not found" };
@@ -150,7 +162,7 @@ export async function approveRequestService(payload: any): Promise<Result> {
     const approvalProgress = data.approval_progress || [];
     const currentLevel = data.current_level;
     const levelBlock = approvalProgress.find((lvl: any) => lvl.level === currentLevel);
-    const myDecision = levelBlock?.decisions.find((d: any) => d.mits_uid === mits_uid);
+    const myDecision = levelBlock?.decisions.find((d: any) => d.mits_uid?.trim().toLowerCase() === normalizedFacultyUid);
     if (!myDecision) return { success: false, statusCode: 403, message: "Not authorized" };
 
     myDecision.decision = "APPROVED";
@@ -192,6 +204,25 @@ export async function approveRequestService(payload: any): Promise<Result> {
       status: data.status,
       last_updated_at: new Date().toISOString()
     });
+
+    // Sync to SQL Analytics table
+    try {
+      if (normalizedRole) {
+        const roleRow = await prisma.roles.findFirst({
+          where: { role_tag: { equals: normalizedRole, mode: 'insensitive' } }
+        });
+        if (roleRow) {
+          await prisma.analytics.upsert({
+            where: { mits_uid_role_id: { mits_uid: mits_uid.trim(), role_id: roleRow.role_id } },
+            create: { mits_uid: mits_uid.trim(), role_id: roleRow.role_id, approved: 1, pending: 0 },
+            update: { approved: { increment: 1 } }
+          });
+        }
+      }
+    } catch (e) {
+      console.error("Failed to update SQL Analytics:", e);
+    }
+
     return { success: true, statusCode: 200, message: "Request approved" };
   } catch (error) {
     console.error("approveRequestService error:", error);
@@ -201,8 +232,10 @@ export async function approveRequestService(payload: any): Promise<Result> {
 
 export async function rejectRequestService(payload: any): Promise<Result> {
   try {
-    const { mits_uid } = payload.user;
+    const mits_uid = (payload.user.mits_uid as string);
+    const normalizedFacultyUid = mits_uid.trim().toLowerCase();
     const { requestId, role, reason } = payload.body;
+    const normalizedRole = (role as string)?.trim().toLowerCase();
 
     if (!requestId || !role || !reason) {
       return { success: false, statusCode: 400, message: "requestId, role, and reason are required" };
@@ -216,7 +249,7 @@ export async function rejectRequestService(payload: any): Promise<Result> {
     const approvalProgress = data.approval_progress || [];
     const currentLevel = data.current_level;
     const levelBlock = approvalProgress.find((lvl: any) => lvl.level === currentLevel);
-    const myDecision = levelBlock?.decisions.find((d: any) => d.mits_uid === mits_uid);
+    const myDecision = levelBlock?.decisions.find((d: any) => d.mits_uid?.trim().toLowerCase() === normalizedFacultyUid);
 
     if (myDecision) {
       myDecision.decision = "REJECTED";
@@ -229,7 +262,7 @@ export async function rejectRequestService(payload: any): Promise<Result> {
       approval_progress: approvalProgress,
       status: "REJECTED",
       rejection_info: {
-        rejected_by: mits_uid,
+        rejected_by: mits_uid.trim(),
         role: role,
         reason: reason,
         timestamp: new Date().toISOString()
@@ -241,6 +274,24 @@ export async function rejectRequestService(payload: any): Promise<Result> {
       where: { req_id: requestId },
       data: { status: 2 }
     });
+
+    // Sync to SQL Analytics table
+    try {
+      if (normalizedRole) {
+        const roleRow = await prisma.roles.findFirst({
+          where: { role_tag: { equals: normalizedRole, mode: 'insensitive' } }
+        });
+        if (roleRow) {
+          await prisma.analytics.upsert({
+            where: { mits_uid_role_id: { mits_uid: mits_uid.trim(), role_id: roleRow.role_id } },
+            create: { mits_uid: mits_uid.trim(), role_id: roleRow.role_id, rejected: 1, pending: 0 },
+            update: { rejected: { increment: 1 } }
+          });
+        }
+      }
+    } catch (e) {
+      console.error("Failed to update SQL Analytics:", e);
+    }
 
     return { success: true, statusCode: 200, message: "Request rejected" };
   } catch (error) {
@@ -261,8 +312,9 @@ export async function getActedRequestsService(user: any): Promise<Result> {
     for (const doc of requestsSnap.docs) {
       const data = doc.data();
       let actedOn = false;
+      const normalizedFacultyUid = facultyUid.toLowerCase();
       for (const level of (data.approval_progress || [])) {
-        if (level.decisions?.some((d: any) => d.mits_uid === facultyUid && d.decision)) {
+        if (level.decisions?.some((d: any) => d.mits_uid?.toLowerCase() === normalizedFacultyUid && d.decision)) {
           actedOn = true;
           break;
         }
@@ -330,6 +382,99 @@ export async function getActedRequestsService(user: any): Promise<Result> {
     return { success: true, statusCode: 200, message: "Acted requests fetched", data: actedRequests };
   } catch (error) {
     console.error("getActedRequestsService error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function getFacultyDashboardDataService(user: any, query: any): Promise<Result> {
+  try {
+    const userAccount = await prisma.userAccount.findUnique({ where: { auth_uid: user.uid } });
+    if (!userAccount) return { success: false, statusCode: 404, message: "Faculty account not found" };
+    const facultyUid = userAccount.mits_uid.trim();
+    const selectedRole = (query?.role as string)?.trim().toLowerCase();
+
+    // 1. Fetch Approved/Rejected stats from SQL Analytics table
+    let approvedCount = 0;
+    let rejectedCount = 0;
+
+    if (selectedRole && selectedRole !== "all") {
+      const roleRow = await prisma.roles.findFirst({
+        where: { role_tag: { equals: selectedRole, mode: 'insensitive' } }
+      });
+      if (roleRow) {
+        const stats = await prisma.analytics.findUnique({
+          where: { mits_uid_role_id: { mits_uid: facultyUid, role_id: roleRow.role_id } }
+        });
+        approvedCount = stats?.approved || 0;
+        rejectedCount = stats?.rejected || 0;
+      }
+    } else {
+      // "all" role: Sum stats for all roles of this faculty
+      const stats = await prisma.analytics.aggregate({
+        where: { mits_uid: facultyUid },
+        _sum: { approved: true, rejected: true }
+      });
+      approvedCount = stats._sum.approved || 0;
+      rejectedCount = stats._sum.rejected || 0;
+    }
+
+    // 2. Consolidate Firestore scanning for Breakdown
+    const procTitlesSnap = await prisma.procedures.findMany({ select: { proc_id: true, title: true } });
+    const procMap: Record<string, string> = {};
+    procTitlesSnap.forEach(p => procMap[p.proc_id] = p.title);
+
+    const typeBreakdown: Record<string, number> = {};
+    const requestsSnap = await firestore.collection("requests").get();
+    const normalizedFacultyUid = facultyUid.toLowerCase();
+
+    for (const doc of requestsSnap.docs) {
+      const data = doc.data();
+      const title = procMap[data.procId] || "Unknown";
+
+      for (const level of (data.approval_progress || [])) {
+        for (const decision of (level.decisions || [])) {
+          if (decision.mits_uid?.trim().toLowerCase() === normalizedFacultyUid && decision.decision) {
+            const decisionRole = (decision.role || level.role || "approver").trim().toLowerCase();
+            if (!selectedRole || selectedRole === "all" || decisionRole === selectedRole) {
+              typeBreakdown[title] = (typeBreakdown[title] || 0) + 1;
+            }
+          }
+        }
+      }
+    }
+
+    // 3. Fetch Pending Approvals for this faculty
+    const pendingApprovals = await getRequestsToApproveService({ user: { mits_uid: facultyUid }, query: { role: selectedRole || "all" } });
+    const pendingList = (pendingApprovals.success && pendingApprovals.data) ? (pendingApprovals.data.requests || []) : [];
+    const pendingCount = pendingList.length;
+
+    // 4. Formatting output
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Dashboard data fetched",
+      data: {
+        stats: {
+          pending: pendingCount,
+          approved: approvedCount,
+          rejected: rejectedCount,
+          total: approvedCount + rejectedCount + pendingCount
+        },
+        breakdown: Object.entries(typeBreakdown).map(([label, count]) => ({ label, count })),
+        recentPending: pendingList.slice(0, 3).map((r: any) => ({
+          id: r.id,
+          subject: r.type,
+          date: r.date,
+          status: "Pending Your Action"
+        })),
+        updates: [
+          { msg: `You have ${pendingCount} new requests waiting for approval.`, time: "Just now", color: "blue" },
+          { msg: `Total requests processed by you: ${approvedCount + rejectedCount}`, time: "Today", color: "green" }
+        ]
+      }
+    };
+  } catch (error) {
+    console.error("getFacultyDashboardDataService error:", error);
     return { success: false, statusCode: 500, message: "Internal server error" };
   }
 }
