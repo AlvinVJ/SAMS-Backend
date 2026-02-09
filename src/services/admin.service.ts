@@ -156,10 +156,9 @@ export async function saveProcedureDef(payload: inputPayload): Promise<Result> {
 // ============================================
 export async function getProcedures(payload: { user: any }): Promise<Result> {
   try {
-    // Fetch procedures from SQL
+    // Fetch procedures from SQL (active and inactive)
     const procedures = await prisma.procedures.findMany({
       where: {
-        is_active: true,
         deleted_at: null,
       },
       orderBy: {
@@ -245,7 +244,7 @@ export async function getProcedureById(payload: {
       };
     }
 
-    if (!procedure.is_active || procedure.deleted_at) {
+    if (procedure.deleted_at) {
       return {
         success: false,
         statusCode: 404,
@@ -282,7 +281,7 @@ export async function getProcedureById(payload: {
       }
     });
 
-    const visibility = userTypes.map((ut) => 
+    const visibility = userTypes.map((ut) =>
       ut.user_type_tag.toLowerCase()
     );
 
@@ -343,35 +342,57 @@ export async function updateProcedure(payload: {
       };
     }
 
-    // Update Firestore
+    // -------------------------------------------------------------------------
+    // VERSIONING LOGIC:
+    // Instead of updating the existing record, we deactivate it and create a new one.
+    // -------------------------------------------------------------------------
+
+    // 1. Deactivate old procedure in SQL
+    await prisma.procedures.update({
+      where: { proc_id: procedureId },
+      data: {
+        is_active: false,
+        // We don't set deleted_at because it's just an old version, not "deleted"
+      },
+    });
+
+    // 2. Deactivate old procedure in Firestore
     await firestore
       .collection("procedures")
       .doc(procedureId)
       .update({
+        is_active: false,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+    // 3. Create NEW Firestore doc for the new version
+    const newProcRef = await firestore
+      .collection("procedures")
+      .add({
         title,
         desc,
         formFields,
         approvalLevels,
         visibility,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        is_active: true,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        previousVersionId: procedureId, // Optional: track history
       });
 
-    // Update SQL metadata
-    await prisma.procedures.update({
-      where: { proc_id: procedureId },
+    const newFirestoreDocId = newProcRef.id;
+
+    // 4. Create NEW SQL metadata record
+    await prisma.procedures.create({
       data: {
+        proc_id: newFirestoreDocId,
         title: title,
         desc_first_50_char: JSON.stringify(desc).slice(0, 50),
+        is_active: true,
+        created_by: payload.user.mits_uid,
       },
     });
 
-    // Update visibility
-    // First, delete existing visibility records
-    await prisma.procedureVisibility.deleteMany({
-      where: { proc_id: procedureId },
-    });
-
-    // Then, create new visibility records
+    // 5. Create visibility records for the new version
     const userTypes = await prisma.userTypes.findMany({
       where: { is_active: true },
     });
@@ -388,7 +409,7 @@ export async function updateProcedure(payload: {
 
     await prisma.procedureVisibility.createMany({
       data: allowedUserTypes.map((ut) => ({
-        proc_id: procedureId,
+        proc_id: newFirestoreDocId,
         user_type: ut.user_type_id,
       })),
     });
@@ -396,9 +417,9 @@ export async function updateProcedure(payload: {
     return {
       success: true,
       statusCode: 200,
-      message: "Procedure updated successfully",
+      message: "Procedure versioned successfully",
       data: {
-        proc_id: procedureId,
+        proc_id: newFirestoreDocId,
       },
     };
   } catch (error) {
@@ -442,29 +463,58 @@ export async function deleteProcedure(payload: {
       };
     }
 
-    // Soft delete in SQL
-    await prisma.procedures.update({
+    // Check for existing requests linked to this procedure
+    const requestCount = await prisma.requests.count({
       where: { proc_id: procedureId },
-      data: {
-        is_active: false,
-        deleted_at: new Date(),
-      },
     });
 
-    // Mark as deleted in Firestore
-    await firestore
-      .collection("procedures")
-      .doc(procedureId)
-      .update({
-        is_active: false,
-        deleted_at: admin.firestore.FieldValue.serverTimestamp(),
+    if (requestCount > 0) {
+      // If requests exist, ONLY deactivate (don't set deleted_at)
+      await prisma.procedures.update({
+        where: { proc_id: procedureId },
+        data: {
+          is_active: false,
+        },
       });
 
-    return {
-      success: true,
-      statusCode: 200,
-      message: "Procedure deleted successfully",
-    };
+      // Update Firestore accordingly
+      await firestore
+        .collection("procedures")
+        .doc(procedureId)
+        .update({
+          is_active: false,
+        });
+
+      return {
+        success: true,
+        statusCode: 200,
+        message: "Procedure deactivated (preserved for historical requests)",
+      };
+    } else {
+      // If NO requests exist, perform a soft delete (set deleted_at)
+      await prisma.procedures.update({
+        where: { proc_id: procedureId },
+        data: {
+          is_active: false,
+          deleted_at: new Date(),
+        },
+      });
+
+      // Mark as deleted in Firestore
+      await firestore
+        .collection("procedures")
+        .doc(procedureId)
+        .update({
+          is_active: false,
+          deleted_at: admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+      return {
+        success: true,
+        statusCode: 200,
+        message: "Procedure deleted successfully (safe to remove)",
+      };
+    }
   } catch (error) {
     console.error("deleteProcedure error:", error);
     return {
