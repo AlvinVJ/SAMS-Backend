@@ -46,3 +46,22 @@ export const getDashboardData = async (req: Request, res: Response) => {
     res.status(500).json({ success: false, message: "Internal server error" });
   }
 }
+export const getProfile = async (req: Request, res: Response) => {
+  try {
+    const result = await FacultyService.getFacultyProfileService((req as any).user);
+    res.status(result.statusCode).json(result);
+  } catch (error) {
+    console.error("getProfile controller error:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+}
+
+export const getNotifications = async (req: Request, res: Response) => {
+  try {
+    const result = await FacultyService.getFacultyNotificationsService((req as any).user);
+    res.status(result.statusCode).json(result);
+  } catch (error) {
+    console.error("getNotifications controller error:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+}

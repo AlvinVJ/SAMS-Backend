@@ -478,3 +478,119 @@ export async function getFacultyDashboardDataService(user: any, query: any): Pro
     return { success: false, statusCode: 500, message: "Internal server error" };
   }
 }
+
+export async function getFacultyProfileService(user: any): Promise<Result> {
+  try {
+    const userAccount = await prisma.userAccount.findUnique({
+      where: { auth_uid: user.uid },
+      include: {
+        Faculty: {
+          include: {
+            Departments: true,
+            ClassFaculty: {
+              include: {
+                Classes: true
+              }
+            }
+          }
+        },
+        RoleMapping: {
+          include: {
+            Roles: true
+          }
+        }
+      }
+    });
+
+    if (!userAccount || !userAccount.Faculty) {
+      return { success: false, statusCode: 404, message: "Faculty profile not found" };
+    }
+
+    const faculty = userAccount.Faculty;
+
+    // Group assigned classes with their roles
+    const assignedClasses = faculty.ClassFaculty.map(cf => ({
+      className: cf.Classes.class,
+      role: cf.role_tag.replaceAll('_', ' ').toUpperCase()
+    }));
+
+    // Get organizational roles
+    const roles = userAccount.RoleMapping.map(rm => rm.Roles.role_tag.replaceAll('_', ' ').toUpperCase());
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Faculty profile fetched",
+      data: {
+        mits_uid: faculty.mits_uid,
+        name: faculty.name,
+        email: faculty.email,
+        department: faculty.Departments.dept_name,
+        assignedClasses: assignedClasses,
+        roles: roles,
+        // Since designation is not in schema yet, we use a default or null
+        designation: "Faculty Member"
+      }
+    };
+  } catch (error) {
+    console.error("getFacultyProfileService error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function getFacultyNotificationsService(user: any): Promise<Result> {
+  try {
+    const userAccount = await prisma.userAccount.findUnique({ where: { auth_uid: user.uid } });
+    if (!userAccount) return { success: false, statusCode: 404, message: "Faculty account not found" };
+    const facultyUid = userAccount.mits_uid.trim();
+
+    const notifications: any[] = [];
+
+    // 1. Fetch requests created by this faculty (Status Updates)
+    const myRequests = await prisma.requests.findMany({
+      where: { created_by: facultyUid },
+      include: { Procedures: true },
+      orderBy: { created_at: 'desc' },
+      take: 10
+    });
+
+    myRequests.forEach(req => {
+      let statusText = "submitted";
+      let type = "info";
+      if (req.status === 1) { statusText = "approved"; type = "success"; }
+      if (req.status === 2) { statusText = "rejected"; type = "error"; }
+
+      notifications.push({
+        id: `own-${req.req_id}`,
+        title: `Request ${statusText.charAt(0).toUpperCase() + statusText.slice(1)}`,
+        description: `Your request for "${req.Procedures.title}" has been ${statusText}.`,
+        time: req.created_at.toISOString(),
+        isUnread: false,
+        type: type
+      });
+    });
+
+    // 2. Fetch requests pending their approval (Action Required)
+    const pendingResult = await getRequestsToApproveService({ user: { mits_uid: facultyUid }, query: { role: "all" } });
+    if (pendingResult.success && pendingResult.data?.requests) {
+      pendingResult.data.requests.forEach((req: any) => {
+        notifications.push({
+          id: `pending-${req.id}`,
+          title: "Action Required",
+          description: `${req.studentName} has submitted a "${req.type}" for your approval.`,
+          time: new Date(req.date).toISOString(), // Mocking time from date
+          isUnread: true,
+          type: "warning"
+        });
+      });
+    }
+
+    // Sort all notifications by time desc
+    notifications.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
+
+    return { success: true, statusCode: 200, message: "Notifications fetched", data: notifications };
+  } catch (error) {
+    console.error("getFacultyNotificationsService error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
