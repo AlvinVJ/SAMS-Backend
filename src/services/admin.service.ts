@@ -524,3 +524,386 @@ export async function deleteProcedure(payload: {
     };
   }
 }
+// ============================================
+// DEPARTMENTS CRUD
+// ============================================
+
+export async function getDepartments(): Promise<Result> {
+  try {
+    const departments = await prisma.departments.findMany({
+      where: { deleted_at: null },
+      orderBy: { dept_name: 'asc' }
+    });
+    return { success: true, statusCode: 200, message: "Departments fetched", data: departments };
+  } catch (error) {
+    console.error("getDepartments error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function createDepartment(payload: { dept_id: number, dept_name: string }): Promise<Result> {
+  try {
+    const department = await prisma.departments.create({
+      data: {
+        dept_id: payload.dept_id,
+        dept_name: payload.dept_name,
+        is_active: true
+      }
+    });
+    return { success: true, statusCode: 201, message: "Department created", data: department };
+  } catch (error) {
+    console.error("createDepartment error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function updateDepartment(payload: { dept_id: number, dept_name: string, is_active: boolean }): Promise<Result> {
+  try {
+    const department = await prisma.departments.update({
+      where: { dept_id: payload.dept_id },
+      data: {
+        dept_name: payload.dept_name,
+        is_active: payload.is_active
+      }
+    });
+    return { success: true, statusCode: 200, message: "Department updated", data: department };
+  } catch (error) {
+    console.error("updateDepartment error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function deleteDepartment(dept_id: number): Promise<Result> {
+  try {
+    await prisma.departments.update({
+      where: { dept_id },
+      data: { is_active: false, deleted_at: new Date() }
+    });
+    return { success: true, statusCode: 200, message: "Department deleted" };
+  } catch (error) {
+    console.error("deleteDepartment error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+// ============================================
+// BATCHES CRUD
+// ============================================
+
+export async function getBatches(): Promise<Result> {
+  try {
+    const batches = await prisma.batches.findMany({
+      where: { deleted_at: null },
+      orderBy: { batch: 'desc' }
+    });
+    return { success: true, statusCode: 200, message: "Batches fetched", data: batches };
+  } catch (error) {
+    console.error("getBatches error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function createBatch(payload: { batch_id: number, batch: string }): Promise<Result> {
+  try {
+    const batch = await prisma.batches.create({
+      data: {
+        batch_id: payload.batch_id,
+        batch: payload.batch,
+        is_active: true
+      }
+    });
+    return { success: true, statusCode: 201, message: "Batch created", data: batch };
+  } catch (error) {
+    console.error("createBatch error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function updateBatch(payload: { batch_id: number, batch: string, is_active: boolean }): Promise<Result> {
+  try {
+    const batch = await prisma.batches.update({
+      where: { batch_id: payload.batch_id },
+      data: {
+        batch: payload.batch,
+        is_active: payload.is_active
+      }
+    });
+    return { success: true, statusCode: 200, message: "Batch updated", data: batch };
+  } catch (error) {
+    console.error("updateBatch error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function deleteBatch(batch_id: number): Promise<Result> {
+  try {
+    await prisma.batches.update({
+      where: { batch_id },
+      data: { is_active: false, deleted_at: new Date() }
+    });
+    return { success: true, statusCode: 200, message: "Batch deleted" };
+  } catch (error) {
+    console.error("deleteBatch error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+// ============================================
+// CLASSES CRUD
+// ============================================
+
+export async function getClasses(): Promise<Result> {
+  try {
+    const classes = await prisma.classes.findMany({
+      where: { deleted_at: null },
+      include: {
+        Departments: true,
+        Batches: true
+      },
+      orderBy: { class: 'asc' }
+    });
+    return { success: true, statusCode: 200, message: "Classes fetched", data: classes };
+  } catch (error) {
+    console.error("getClasses error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function createClass(payload: {
+  class_id: number,
+  batch_id: number,
+  class: string,
+  dept_id: number
+}): Promise<Result> {
+  try {
+    const newClass = await prisma.classes.create({
+      data: {
+        class_id: payload.class_id,
+        batch_id: payload.batch_id,
+        class: payload.class,
+        dept_id: payload.dept_id,
+        is_active: true
+      }
+    });
+    return { success: true, statusCode: 201, message: "Class created", data: newClass };
+  } catch (error) {
+    console.error("createClass error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function updateClass(payload: {
+  class_id: number,
+  batch_id: number,
+  class: string,
+  dept_id: number,
+  is_active: boolean
+}): Promise<Result> {
+  try {
+    const updatedClass = await prisma.classes.update({
+      where: { class_id: payload.class_id },
+      data: {
+        batch_id: payload.batch_id,
+        class: payload.class,
+        dept_id: payload.dept_id,
+        is_active: payload.is_active
+      }
+    });
+    return { success: true, statusCode: 200, message: "Class updated", data: updatedClass };
+  } catch (error) {
+    console.error("updateClass error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function deleteClass(class_id: number): Promise<Result> {
+  try {
+    await prisma.classes.update({
+      where: { class_id },
+      data: { is_active: false, deleted_at: new Date() }
+    });
+    return { success: true, statusCode: 200, message: "Class deleted" };
+  } catch (error) {
+    console.error("deleteClass error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+// ============================================
+// USERS MANAGEMENT
+// ============================================
+
+export async function getUsersService(): Promise<Result> {
+  try {
+    const users = await prisma.userAccount.findMany({
+      where: { deleted_at: null },
+      include: {
+        Faculty: {
+          include: {
+            Departments: true,
+          },
+        },
+        Student: {
+          include: {
+            Classes: {
+              include: {
+                Departments: true,
+              }
+            },
+            Batches: true,
+          },
+        },
+        RoleMapping: {
+          where: { is_active: true },
+          include: {
+            Roles: true,
+          },
+        },
+        UserTypes: true,
+      },
+      orderBy: { mits_uid: 'asc' },
+    });
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Users fetched successfully",
+      data: users,
+    };
+  } catch (error) {
+    console.error("getUsersService error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
+}
+
+export async function updateUserService(payload: {
+  mits_uid: string;
+  name?: string;
+  email?: string;
+  is_active?: boolean;
+  role_id?: number;
+}): Promise<Result> {
+  try {
+    const { mits_uid, name, email, is_active, role_id } = payload;
+
+    const user = await prisma.userAccount.findUnique({
+      where: { mits_uid },
+      include: { UserTypes: true },
+    });
+
+    if (!user) {
+      return { success: false, statusCode: 404, message: "User not found" };
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // 1. Update UserAccount
+      if (is_active !== undefined || email !== undefined) {
+        await tx.userAccount.update({
+          where: { mits_uid },
+          data: {
+            ...(is_active !== undefined && { is_active }),
+            ...(email && { email }),
+          },
+        });
+      }
+
+      // 2. Update Profile
+      if (user.UserTypes.user_type_tag === "FACULTY") {
+        await tx.faculty.update({
+          where: { mits_uid },
+          data: {
+            ...(name !== undefined && { name }),
+            ...(email && { email }),
+            ...(is_active !== undefined && { is_active }),
+          },
+        });
+      } else if (user.UserTypes.user_type_tag === "STUDENT") {
+        await tx.student.update({
+          where: { mits_uid },
+          data: {
+            ...(name !== undefined && { name }),
+            ...(is_active !== undefined && { is_active }),
+          },
+        });
+      }
+
+      // 3. Update RoleMapping
+      if (role_id !== undefined) {
+        const existingMapping = await tx.roleMapping.findFirst({
+          where: { mits_uid, is_active: true },
+        });
+
+        if (role_id === null) {
+          // If role_id is explicitly null, deactivate any active mapping
+          if (existingMapping) {
+            await tx.roleMapping.update({
+              where: { role_mapping_id: existingMapping.role_mapping_id },
+              data: { is_active: false },
+            });
+          }
+        } else {
+          // Update existing or create new mapping
+          if (existingMapping) {
+            await tx.roleMapping.update({
+              where: { role_mapping_id: existingMapping.role_mapping_id },
+              data: { role_id },
+            });
+          } else {
+            const maxId = await tx.roleMapping.aggregate({
+              _max: { role_mapping_id: true },
+            });
+            const newId = (maxId._max.role_mapping_id || 0) + 1;
+
+            await tx.roleMapping.create({
+              data: {
+                role_mapping_id: newId,
+                role_id,
+                mits_uid,
+                is_active: true,
+              },
+            });
+          }
+        }
+      }
+    });
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "User updated successfully",
+    };
+  } catch (error) {
+    console.error("updateUserService error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
+}
+
+export async function getRolesService(): Promise<Result> {
+  try {
+    const roles = await prisma.roles.findMany({
+      where: { is_active: true },
+      orderBy: { role_tag: "asc" },
+    });
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Roles fetched",
+      data: roles,
+    };
+  } catch (error) {
+    console.error("getRolesService error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
+}

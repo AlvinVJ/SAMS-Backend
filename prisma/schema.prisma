@@ -212,6 +212,7 @@ model Student {
 model UserAccount {
   mits_uid   String  @id
   auth_uid   String  @unique
+  email      String? @unique
   user_type  Int
   is_active  Boolean @default(true)
   deleted_at DateTime?
