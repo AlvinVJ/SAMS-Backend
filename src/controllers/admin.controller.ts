@@ -232,3 +232,13 @@ export async function getRoles(req: Request, res: Response) {
   const result = await AdminService.getRolesService();
   return res.status(result.statusCode).json(result);
 }
+
+export async function getGlobalRequests(req: Request, res: Response) {
+  const result = await AdminService.getGlobalRequestsService();
+  return res.status(result.statusCode).json(result);
+}
+
+export async function getAdminDashboardStats(req: Request, res: Response) {
+  const result = await AdminService.getAdminDashboardStatsService();
+  return res.status(result.statusCode).json(result);
+}

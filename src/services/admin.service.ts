@@ -1,6 +1,7 @@
 import { prisma } from "../db/prisma.js";
 import { firebaseAuth, firestore } from "../config/firebase.js";
 import admin from "../config/firebase.js";
+import { getUserNameFromUid, resolveRequestStatus } from "./requests.service.js";
 
 
 
@@ -904,6 +905,185 @@ export async function getRolesService(): Promise<Result> {
       success: false,
       statusCode: 500,
       message: "Internal server error",
+    };
+  }
+}
+
+// ============================================
+// GLOBAL REQUESTS (INSTITUTIONAL OVERSIGHT)
+// ============================================
+
+export async function getGlobalRequestsService(): Promise<Result> {
+  try {
+    const requests = await prisma.requests.findMany({
+      include: {
+        Procedures: true,
+      },
+      orderBy: { created_at: 'desc' }
+    });
+
+    const formatted = [];
+
+    for (const req of requests) {
+      let current_level = 1;
+      let total_levels = 1;
+      let approvalHistory: any[] = [];
+      let status_text = "Pending";
+      let color = "warning";
+
+      const snap = await firestore.collection("requests").doc(req.req_id).get();
+      if (snap.exists) {
+        const data = snap.data()!;
+        current_level = data.current_level || 1;
+
+        const procDoc = await firestore.collection("procedures").doc(req.proc_id).get();
+        const procData = procDoc.exists ? procDoc.data() : null;
+        total_levels = procData?.approvalLevels?.length || 1;
+
+        const statusResult = await resolveRequestStatus(req, procData, current_level);
+        status_text = statusResult.text;
+        color = statusResult.color;
+
+        const historyBlocks = (data.approval_progress || []);
+        for (const block of historyBlocks) {
+          const levelDefHistory = procData?.approvalLevels?.find((l: any) => l.level === block.level);
+          const fallbackRole = levelDefHistory?.role || levelDefHistory?.roleIds?.[0] || "Approver";
+          for (const decision of block.decisions) {
+            if (decision.decision) {
+              const histEntry = {
+                level: block.level,
+                approverName: await getUserNameFromUid(decision.mits_uid),
+                role: (decision.role || block.role || fallbackRole).replaceAll('_', ' ').toUpperCase(),
+                status: decision.decision,
+                comments: decision.comments,
+                timestamp: decision.timestamp ? decision.timestamp.split('T')[0] : ""
+              };
+              approvalHistory.push(histEntry);
+            }
+          }
+        }
+
+        const userData = await prisma.userAccount.findUnique({
+          where: { mits_uid: req.created_by },
+          include: {
+            Student: { include: { Classes: { include: { Departments: true } } } },
+            Faculty: { include: { Departments: true } }
+          }
+        });
+
+        formatted.push({
+          req_id: req.req_id,
+          procedure_title: req.Procedures?.title || "Unknown Request",
+          created_at: req.created_at,
+          status: req.status,
+          status_text,
+          color,
+          current_level,
+          total_levels,
+          approvalHistory,
+          formData: data.formData || {},
+          studentName: userData?.Student?.name || userData?.Faculty?.name || data.studentName || "Unknown",
+          studentId: req.created_by,
+          department: userData?.Student?.Classes?.Departments?.dept_name || userData?.Faculty?.Departments?.dept_name || "N/A",
+        });
+      }
+    }
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Global requests fetched",
+      data: formatted
+    };
+  } catch (error) {
+    console.error("getGlobalRequestsService error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error"
+    };
+  }
+}
+
+export async function getAdminDashboardStatsService(): Promise<Result> {
+  try {
+    const totalRequests = await prisma.requests.count();
+    const pendingRequests = await prisma.requests.count({ where: { status: 0 } });
+    const approvedRequests = await prisma.requests.count({ where: { status: 1 } });
+    const rejectedRequests = await prisma.requests.count({ where: { status: 2 } });
+
+    const recentRequests = await prisma.requests.findMany({
+      take: 5,
+      orderBy: { created_at: 'desc' },
+      include: { Procedures: true }
+    });
+
+    const recentActivity = [];
+    for (const req of recentRequests) {
+      const snap = await firestore.collection("requests").doc(req.req_id).get();
+      let title = "";
+      let initials = "??";
+      let time = req.created_at;
+
+      if (snap.exists) {
+        const data = snap.data()!;
+        const progress = data.approval_progress || [];
+
+        // Find the absolute last decision
+        let lastDecision: any = null;
+        for (const block of progress) {
+          if (block.decisions && block.decisions.length > 0) {
+            const dec = block.decisions[block.decisions.length - 1];
+            if (dec.decision) {
+              lastDecision = dec;
+            }
+          }
+        }
+
+        if (lastDecision) {
+          const approverName = await getUserNameFromUid(lastDecision.mits_uid);
+          title = `${approverName} ${lastDecision.decision.toLowerCase()} Request #${req.req_id.substring(0, 5)}`;
+          initials = approverName.split(' ').map((n: string) => n[0]).join('').toUpperCase().substring(0, 2);
+          if (lastDecision.timestamp) time = new Date(lastDecision.timestamp);
+        } else {
+          const requesterName = await getUserNameFromUid(req.created_by);
+          title = `${requesterName} created Request #${req.req_id.substring(0, 5)}`;
+          initials = requesterName.split(' ').map((n: string) => n[0]).join('').toUpperCase().substring(0, 2);
+        }
+      } else {
+        const requesterName = await getUserNameFromUid(req.created_by);
+        title = `${requesterName} created Request #${req.req_id.substring(0, 5)}`;
+        initials = requesterName.split(' ').map((n: string) => n[0]).join('').toUpperCase().substring(0, 2);
+      }
+
+      recentActivity.push({
+        initials,
+        title,
+        subtitle: req.Procedures?.title || "Unknown Procedure",
+        time: time.toISOString()
+      });
+    }
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Dashboard stats fetched",
+      data: {
+        stats: {
+          total: totalRequests,
+          pending: pendingRequests,
+          approved: approvedRequests,
+          rejected: rejectedRequests
+        },
+        recentActivity
+      }
+    };
+  } catch (error) {
+    console.error("getAdminDashboardStatsService error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error"
     };
   }
 }

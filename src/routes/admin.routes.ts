@@ -19,7 +19,9 @@ import {
   deleteClass,
   getUsers,
   updateUser,
-  getRoles
+  getRoles,
+  getGlobalRequests,
+  getAdminDashboardStats
 } from "../controllers/admin.controller.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { requireAuth } from "../middleware/requireAuth.js";
@@ -57,3 +59,7 @@ adminRouter.delete("/class/:id", deleteClass);
 adminRouter.get("/users", getUsers);
 adminRouter.put("/user/:id", updateUser);
 adminRouter.get("/roles", getRoles);
+
+// Global Monitoring
+adminRouter.get("/global-requests", getGlobalRequests);
+adminRouter.get("/dashboard-stats", getAdminDashboardStats);

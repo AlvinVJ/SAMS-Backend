@@ -11,7 +11,7 @@ interface Result {
 const generateId = () => Date.now().toString(36) + Math.random().toString(36).substr(2);
 
 // Helper: Resolve Name from UID
-async function getUserNameFromUid(uid: string): Promise<string> {
+export async function getUserNameFromUid(uid: string): Promise<string> {
   const account = await prisma.userAccount.findUnique({
     where: { mits_uid: uid },
     include: { Faculty: true, Student: true },
@@ -22,7 +22,7 @@ async function getUserNameFromUid(uid: string): Promise<string> {
 }
 
 // Helper: Resolve Status Text and Color
-async function resolveRequestStatus(req: any, procData: any, currentLevel: number): Promise<{ text: string, color: string }> {
+export async function resolveRequestStatus(req: any, procData: any, currentLevel: number): Promise<{ text: string, color: string }> {
   if (req.status === 1) return { text: "Approved", color: "success" };
   if (req.status === 2) return { text: "Rejected", color: "error" };
 
