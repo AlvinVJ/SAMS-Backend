@@ -1,5 +1,7 @@
 import type { Request, Response } from "express";
 import * as AdminService from "../services/admin.service.js";
+import { parse } from "fast-csv";
+import * as fs from "fs";
 
 export async function saveProcedure(
   req: Request,
@@ -216,7 +218,8 @@ export async function deleteClass(req: Request, res: Response) {
 }
 
 export async function getUsers(req: Request, res: Response) {
-  const result = await AdminService.getUsersService();
+  const { q } = req.query;
+  const result = await AdminService.getUsersService(q as string);
   return res.status(result.statusCode).json(result);
 }
 
@@ -241,4 +244,66 @@ export async function getGlobalRequests(req: Request, res: Response) {
 export async function getAdminDashboardStats(req: Request, res: Response) {
   const result = await AdminService.getAdminDashboardStatsService();
   return res.status(result.statusCode).json(result);
+}
+
+export async function bulkImportAcademic(req: Request, res: Response) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "No file uploaded" });
+    }
+
+    const departments: any[] = [];
+    const batches: any[] = [];
+    const classes: any[] = [];
+
+    fs.createReadStream(req.file.path)
+      .pipe(parse({ headers: true }))
+      .on("data", (row) => {
+        if (row.type === "department") {
+          departments.push(row);
+        } else if (row.type === "batch") {
+          batches.push(row);
+        } else if (row.type === "class") {
+          classes.push(row);
+        }
+      })
+      .on("end", async () => {
+        const result = await AdminService.bulkImportAcademicService({
+          departments,
+          batches,
+          classes,
+        });
+        fs.unlinkSync(req.file!.path); // Clean up
+        return res.status(result.statusCode).json(result);
+      });
+  } catch (error) {
+    console.error("bulkImportAcademic error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+}
+
+export async function bulkImportUsers(req: Request, res: Response) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "No file uploaded" });
+    }
+
+    const users: any[] = [];
+
+    fs.createReadStream(req.file.path)
+      .pipe(parse({ headers: true }))
+      .on("data", (row) => {
+        users.push(row);
+      })
+      .on("end", async () => {
+        console.log(`Parsed ${users.length} rows from CSV`);
+        const result = await AdminService.bulkImportUsersService({ users });
+        console.log("Bulk import result:", JSON.stringify(result, null, 2));
+        fs.unlinkSync(req.file!.path); // Clean up
+        return res.status(result.statusCode).json(result);
+      });
+  } catch (error) {
+    console.error("bulkImportUsers error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
 }

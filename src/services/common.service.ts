@@ -464,35 +464,12 @@ export async function getRoleTags(
     });
 
     /* ---------------------------------- */
-    /* 3️⃣ Club-based roles               */
-    /* ---------------------------------- */
-    const clubRoles = await prisma.clubAdmin.findMany({
-      where: {
-        is_active: true,
-        deleted_at: null,
-        Clubs: {
-          ClubAdmin: {
-            some: {
-              role_tag: {
-                in: [], // handled below
-              },
-            },
-          },
-        },
-      },
-      select: {
-        role_tag: true,
-      },
-    });
-
-    /* ---------------------------------- */
-    /* 4️⃣ Merge + dedupe                 */
+    /* 3️⃣ Merge + dedupe                 */
     /* ---------------------------------- */
     const roleTags = new Set<string>();
 
     globalRoles.forEach(r => roleTags.add(r.Roles.role_tag));
     classRoles.forEach(r => roleTags.add(r.role_tag));
-    clubRoles.forEach(r => roleTags.add(r.role_tag));
 
     /* ---------------------------------- */
     /* 5️⃣ Return result                  */

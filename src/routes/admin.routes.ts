@@ -21,10 +21,15 @@ import {
   updateUser,
   getRoles,
   getGlobalRequests,
-  getAdminDashboardStats
+  getAdminDashboardStats,
+  bulkImportAcademic,
+  bulkImportUsers
 } from "../controllers/admin.controller.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { requireAuth } from "../middleware/requireAuth.js";
+import multer from "multer";
+
+const upload = multer({ dest: "uploads/" });
 
 export const adminRouter = Router();
 
@@ -63,3 +68,7 @@ adminRouter.get("/roles", getRoles);
 // Global Monitoring
 adminRouter.get("/global-requests", getGlobalRequests);
 adminRouter.get("/dashboard-stats", getAdminDashboardStats);
+
+// Bulk Import
+adminRouter.post("/bulk-import-academic", upload.single("file"), bulkImportAcademic);
+adminRouter.post("/bulk-import-users", upload.single("file"), bulkImportUsers);
