@@ -19,7 +19,9 @@ CREATE TABLE UserTypes (
 INSERT INTO UserTypes VALUES
 (0, 'STUDENT', 'Enrolled student', 1),
 (1, 'FACULTY', 'Teaching or academic staff', 1),
-(2, 'ADMIN', 'System / office admin', 1);
+(2, 'ADMIN', 'System / office admin', 1),
+(3, 'CLUB_LEAD', 'Student Club Leaders', 1),
+(4, 'PLACEMENT_COORDINATOR', 'Faculty Placement Team', 1);
 
 CREATE TABLE Batches (
   batch_id INT PRIMARY KEY,

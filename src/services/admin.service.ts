@@ -114,10 +114,11 @@ export async function saveProcedureDef(payload: inputPayload): Promise<Result> {
     if (visibility.includes("all")) {
       allowedUserTypes = userTypes;
     } else {
-      const tags = visibility.map(v => v.toUpperCase()); // ["STUDENT", "FACULTY"]
+      const normalize = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const tags = visibility.map(v => normalize(v)); // e.g. ["PLACEMENTCOORDINATOR"]
 
       allowedUserTypes = userTypes.filter(
-        (ut) => tags.includes(ut.user_type_tag)
+        (ut) => tags.includes(normalize(ut.user_type_tag))
       );
     }
 
@@ -320,7 +321,7 @@ export async function updateProcedure(payload: {
 }): Promise<Result> {
   try {
     const { procedureId, body } = payload;
-    const { title, desc, formFields, approvalLevels, visibility } = body.procedure;
+    const { title, desc, formFields, approvalLevels, visibility, system_hook } = body.procedure;
 
     // Check if procedure exists
     const existingProcedure = await prisma.procedures.findUnique({
@@ -375,6 +376,7 @@ export async function updateProcedure(payload: {
         formFields,
         approvalLevels,
         visibility,
+        system_hook,
         is_active: true,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         previousVersionId: procedureId, // Optional: track history
@@ -402,9 +404,10 @@ export async function updateProcedure(payload: {
     if (visibility.includes("all")) {
       allowedUserTypes = userTypes;
     } else {
-      const tags = visibility.map((v: string) => v.toUpperCase());
+      const normalize = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const tags = visibility.map((v: string) => normalize(v));
       allowedUserTypes = userTypes.filter((ut) =>
-        tags.includes(ut.user_type_tag)
+        tags.includes(normalize(ut.user_type_tag))
       );
     }
 

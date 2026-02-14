@@ -307,3 +307,40 @@ export async function bulkImportUsers(req: Request, res: Response) {
     return res.status(500).json({ success: false, message: "Internal server error" });
   }
 }
+
+export async function bulkImportPlacementAttendance(req: Request, res: Response) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "No file uploaded" });
+    }
+
+    const { eventName, date } = req.body;
+    if (!eventName || !date) {
+      return res.status(400).json({ success: false, message: "Event name and date are required" });
+    }
+
+    const students: any[] = [];
+
+    fs.createReadStream(req.file.path)
+      .pipe(parse({ headers: true }))
+      .on("data", (row) => {
+        if (row.mits_uid) {
+          students.push(row);
+        }
+      })
+      .on("end", async () => {
+        const placementService = await import("../services/placement.service.js");
+        const result = await placementService.processPlacementAttendance({
+          students,
+          coordinatorUid: req.user.mits_uid,
+          eventName,
+          date
+        });
+        fs.unlinkSync(req.file!.path); // Clean up
+        return res.status(result.statusCode).json(result);
+      });
+  } catch (error) {
+    console.error("bulkImportPlacementAttendance error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+}
