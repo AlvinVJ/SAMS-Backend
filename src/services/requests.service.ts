@@ -210,7 +210,7 @@ export async function getMyRequests(user: any): Promise<Result> {
           current_level,
           total_levels,
           approvalHistory,
-          formData: data.formData || {},
+          formData: data.formData || data.form_response || {},
           studentName: userData?.Student?.name || data.studentName || "Unknown",
           studentId: req.created_by,
           department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",

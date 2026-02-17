@@ -428,7 +428,7 @@ export async function create_request(
         club_id: null,
       },
 
-      form_response: formData,
+      formData,
 
       approval_progress, // initialized empty; filled later
     };

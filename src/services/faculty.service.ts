@@ -131,11 +131,11 @@ export async function getRequestsToApproveService(payload: any) {
         studentId: req.created_by,
         department: req.UserAccount?.Student?.Classes?.Departments?.dept_name || "N/A",
         date: req.created_at.toISOString().split("T")[0],
-        description: data.formData ? Object.entries(data.formData).map(([k, v]) => `${k}: ${v}`).join(" | ") : "No description",
+        description: (data.formData || data.form_response) ? Object.entries(data.formData || data.form_response).map(([k, v]) => `${k}: ${v}`).join(" | ") : "No description",
         attachments: data.attachments || [],
         roleTag: selectedRole,
         color: "blue",
-        formData: data.formData || {},
+        formData: data.formData || data.form_response || {},
         approvalHistory: approvalHistory
       });
     }
@@ -370,7 +370,7 @@ export async function getActedRequestsService(user: any): Promise<Result> {
           color,
           current_level: data.current_level || 1,
           total_levels,
-          formData: data.formData || {},
+          formData: data.formData || data.form_response || {},
           studentName: userData?.Student?.name || data.studentName || "Unknown",
           studentId: prismaReq?.created_by,
           department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
