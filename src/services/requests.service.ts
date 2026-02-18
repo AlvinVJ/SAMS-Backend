@@ -129,12 +129,33 @@ export async function createRequest(payload: { body: any; user: any }): Promise<
       },
     });
 
-    // 2. Populate ToApprove buffer table in SQL
+    // 2. Populate ToApprove buffer table in SQL and update Analytics
     if (toApproveData.length > 0) {
       await prisma.toApprove.createMany({
         data: toApproveData,
         skipDuplicates: true
       });
+
+      // Update Analytics pending count
+      try {
+        const firstLevelRole = (level1Def.roleIds || [level1Def.role])?.[0];
+        if (firstLevelRole) {
+          const roleRow = await prisma.roles.findFirst({
+            where: { role_tag: { equals: firstLevelRole, mode: 'insensitive' } }
+          });
+          if (roleRow) {
+            for (const approver of toApproveData) {
+              await prisma.analytics.upsert({
+                where: { mits_uid_role_id: { mits_uid: approver.approverUID, role_id: roleRow.role_id } },
+                create: { mits_uid: approver.approverUID, role_id: roleRow.role_id, pending: 1, approved: 0, rejected: 0 },
+                update: { pending: { increment: 1 } }
+              });
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Analytics pending update failed in requests.service:", e);
+      }
     }
 
     // 3. Create Firestore record

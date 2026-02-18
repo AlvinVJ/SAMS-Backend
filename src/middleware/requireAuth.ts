@@ -30,7 +30,6 @@ export async function requireAuth(
   next: NextFunction
 ) {
   const header = req.headers.authorization;
-  console.log(req);
   if(header==null){
     return res.status(401).json({ error: "Authorization header not found" });
 

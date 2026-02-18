@@ -140,16 +140,17 @@ async function buildInitialApprovalProgress(
   const approvalLevels = procedure?.approvalLevels ?? [];
 
   if (approvalLevels.length === 0) {
-    return []; // no approval workflow
+    return { approval_progress: [], initialApprovers: [], initialRole: null };
   }
 
   const firstLevel = approvalLevels[0];
   let approvers: string[] = [];
 
   /* 2️⃣ Resolve approvers from roles */
-  for (const roleTag of firstLevel.roleIds ?? []) {
+  // Handle both roleIds (array) and role (single string)
+  const roleTags = firstLevel.roleIds ?? (firstLevel.role ? [firstLevel.role] : []);
+  for (const roleTag of roleTags) {
     const users = await resolveApproversForRole(roleTag, requesterUid);
-    console.log(users);
     approvers.push(...users);
   }
 
@@ -160,17 +161,23 @@ async function buildInitialApprovalProgress(
     mits_uid: uid,
   }));
 
-  /* 4️⃣ Return approval_progress array */
-  return [
-    {
-      level: 1,
-      net_status: "PENDING",
-      required_approvals: firstLevel.allMustApprove
-        ? approvers.length
-        : firstLevel.minApprovals,
-      decisions,
-    },
-  ];
+  const initialRole = roleTags[0] || "Approver";
+
+  /* 4️⃣ Return approval_progress array and metadata */
+  return {
+    approval_progress: [
+      {
+        level: 1,
+        net_status: "PENDING",
+        required_approvals: firstLevel.allMustApprove
+          ? approvers.length
+          : firstLevel.minApprovals,
+        decisions,
+      },
+    ],
+    initialApprovers: approvers,
+    initialRole
+  };
 }
 
 
@@ -495,7 +502,7 @@ export async function create_request(
     }
 
     const now = admin.firestore.FieldValue.serverTimestamp();
-    const approval_progress = await buildInitialApprovalProgress(
+    const { approval_progress, initialApprovers, initialRole } = await buildInitialApprovalProgress(
       procedureId,
       mits_uid
     );
@@ -520,7 +527,7 @@ export async function create_request(
 
       formData,
 
-      approval_progress, // initialized empty; filled later
+      approval_progress,
     };
 
     const reqRef = await admin
@@ -530,6 +537,7 @@ export async function create_request(
 
     const req_id = reqRef.id; // 🔑 Firestore doc id
 
+    // 3. Create SQL Request record
     await prisma.requests.create({
       data: {
         req_id,
@@ -538,6 +546,39 @@ export async function create_request(
         status: 0, // PENDING
       },
     });
+
+    // 4. Populate ToApprove table for initial level approvers
+    if (initialApprovers.length > 0) {
+      await prisma.toApprove.createMany({
+        data: initialApprovers.map(uid => ({
+          req_id: req_id,
+          approverUID: uid,
+          approvalLevel: 1,
+          approvalType: initialRole || "Approver"
+        })),
+        skipDuplicates: true
+      });
+
+      // 5. Update Analytics pending count
+      try {
+        if (initialRole) {
+          const roleRow = await prisma.roles.findFirst({
+            where: { role_tag: { equals: initialRole, mode: 'insensitive' } }
+          });
+          if (roleRow) {
+            for (const approverUid of initialApprovers) {
+              await prisma.analytics.upsert({
+                where: { mits_uid_role_id: { mits_uid: approverUid, role_id: roleRow.role_id } },
+                create: { mits_uid: approverUid, role_id: roleRow.role_id, pending: 1, approved: 0, rejected: 0 },
+                update: { pending: { increment: 1 } }
+              });
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Analytics pending update failed:", e);
+      }
+    }
 
 
     return {

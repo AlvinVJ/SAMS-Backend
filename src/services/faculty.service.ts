@@ -227,6 +227,24 @@ export async function approveRequestService(payload: any): Promise<Result> {
             data: toApproveData,
             skipDuplicates: true
           });
+
+          // Sync Analytics pending for next level
+          try {
+            const roleRow = await prisma.roles.findFirst({
+              where: { role_tag: { equals: nextLevelRole, mode: 'insensitive' } }
+            });
+            if (roleRow) {
+              for (const uid of nextApprovers) {
+                await prisma.analytics.upsert({
+                  where: { mits_uid_role_id: { mits_uid: uid, role_id: roleRow.role_id } },
+                  create: { mits_uid: uid, role_id: roleRow.role_id, pending: 1, approved: 0, rejected: 0 },
+                  update: { pending: { increment: 1 } }
+                });
+              }
+            }
+          } catch (e) {
+            console.error("Failed to update next level Analytics pending counts:", e);
+          }
         }
       } else {
         data.status = "APPROVED";
@@ -251,12 +269,12 @@ export async function approveRequestService(payload: any): Promise<Result> {
           await prisma.analytics.upsert({
             where: { mits_uid_role_id: { mits_uid: mits_uid.trim(), role_id: roleRow.role_id } },
             create: { mits_uid: mits_uid.trim(), role_id: roleRow.role_id, approved: 1, pending: 0 },
-            update: { approved: { increment: 1 } }
+            update: { approved: { increment: 1 }, pending: { decrement: 1 } }
           });
         }
       }
     } catch (e) {
-      console.error("Failed to update SQL Analytics:", e);
+      console.error("Failed to update SQL Analytics (approve):", e);
     }
 
     return { success: true, statusCode: 200, message: "Request approved" };
@@ -326,12 +344,12 @@ export async function rejectRequestService(payload: any): Promise<Result> {
           await prisma.analytics.upsert({
             where: { mits_uid_role_id: { mits_uid: mits_uid.trim(), role_id: roleRow.role_id } },
             create: { mits_uid: mits_uid.trim(), role_id: roleRow.role_id, rejected: 1, pending: 0 },
-            update: { rejected: { increment: 1 } }
+            update: { rejected: { increment: 1 }, pending: { decrement: 1 } }
           });
         }
       }
     } catch (e) {
-      console.error("Failed to update SQL Analytics:", e);
+      console.error("Failed to update SQL Analytics (reject):", e);
     }
 
     return { success: true, statusCode: 200, message: "Request rejected" };
