@@ -7,43 +7,39 @@ datasource db {
   provider = "postgresql"
 }
 
-
 model Analytics {
   mits_uid String
   role_id  Int
-  pending  Int? @default(0)
-  approved Int? @default(0)
-  rejected Int? @default(0)
-
-  Faculty Faculty @relation(fields: [mits_uid], references: [mits_uid])
-  Roles   Roles   @relation(fields: [role_id], references: [role_id])
+  pending  Int?    @default(0)
+  approved Int?    @default(0)
+  rejected Int?    @default(0)
+  Faculty  Faculty @relation(fields: [mits_uid], references: [mits_uid])
+  Roles    Roles   @relation(fields: [role_id], references: [role_id])
 
   @@id([mits_uid, role_id])
 }
 
 model Batches {
-  batch_id   Int      @id
+  batch_id   Int       @id
   batch      String
-  is_active  Boolean  @default(true)
+  is_active  Boolean   @default(true)
   deleted_at DateTime?
-
-  Classes Classes[]
-  Student Student[]
+  Classes    Classes[]
+  Student    Student[]
 
   @@index([is_active])
 }
 
 model Classes {
-  class_id   Int     @id
-  batch_id   Int
-  class      String
-  dept_id    Int
-  is_active  Boolean @default(true)
-  deleted_at DateTime?
-
-  Batches      Batches     @relation(fields: [batch_id], references: [batch_id])
-  Departments  Departments @relation(fields: [dept_id], references: [dept_id])
+  class_id     Int            @id
+  batch_id     Int
+  class        String
+  dept_id      Int
+  is_active    Boolean        @default(true)
+  deleted_at   DateTime?
   ClassFaculty ClassFaculty[]
+  Batches      Batches        @relation(fields: [batch_id], references: [batch_id])
+  Departments  Departments    @relation(fields: [dept_id], references: [dept_id])
   Student      Student[]
 
   @@index([is_active])
@@ -54,83 +50,77 @@ model ClassFaculty {
   class_id   Int
   mits_uid   String
   role_tag   String
-  is_active  Boolean @default(true)
+  is_active  Boolean   @default(true)
   deleted_at DateTime?
-
-  Classes Classes @relation(fields: [class_id], references: [class_id])
-  Faculty Faculty @relation(fields: [mits_uid], references: [mits_uid])
-  Roles   Roles   @relation(fields: [role_tag], references: [role_tag])
+  Classes    Classes   @relation(fields: [class_id], references: [class_id])
+  Faculty    Faculty   @relation(fields: [mits_uid], references: [mits_uid])
+  Roles      Roles     @relation(fields: [role_tag], references: [role_tag])
 
   @@id([class_id, mits_uid, role_tag])
   @@index([is_active])
 }
 
 model ClubAdmin {
-  club_admin_id Int     @id
+  club_admin_id Int       @id
   club_id       Int
   role_tag      String
-  is_active     Boolean @default(true)
+  is_active     Boolean   @default(true)
   deleted_at    DateTime?
-
-  Clubs Clubs @relation(fields: [club_id], references: [club_id])
-  Roles Roles @relation(fields: [role_tag], references: [role_tag])
+  Clubs         Clubs     @relation(fields: [club_id], references: [club_id])
+  Roles         Roles     @relation(fields: [role_tag], references: [role_tag])
 
   @@index([is_active])
 }
 
 model Clubs {
-  club_id              Int     @id
+  club_id              Int          @id
   club_name            String
   dept_id              Int?
   coordinator_role_tag String?
-  is_active            Boolean @default(true)
+  is_active            Boolean      @default(true)
   deleted_at           DateTime?
-
-  ClubAdmin   ClubAdmin[]
-  Roles       Roles?       @relation(fields: [coordinator_role_tag], references: [role_tag])
-  Departments Departments? @relation(fields: [dept_id], references: [dept_id])
+  ClubAdmin            ClubAdmin[]
+  Roles                Roles?       @relation(fields: [coordinator_role_tag], references: [role_tag])
+  Departments          Departments? @relation(fields: [dept_id], references: [dept_id])
 
   @@index([is_active])
 }
 
 model Departments {
-  dept_id    Int     @id
+  dept_id    Int       @id
   dept_name  String
-  is_active  Boolean @default(true)
+  is_active  Boolean   @default(true)
   deleted_at DateTime?
-
-  Classes Classes[]
-  Clubs   Clubs[]
-  Faculty Faculty[]
+  Classes    Classes[]
+  Clubs      Clubs[]
+  Faculty    Faculty[]
 
   @@index([is_active])
 }
 
 model Faculty {
-  mits_uid      String  @id
+  mits_uid      String         @id
   name          String
   department_id Int
-  email         String? @unique
-  is_active     Boolean @default(true)
+  email         String?        @unique
+  is_active     Boolean        @default(true)
   deleted_at    DateTime?
-
-  Analytics    Analytics[]
-  ClassFaculty ClassFaculty[]
-  Departments  Departments @relation(fields: [department_id], references: [dept_id])
-  UserAccount  UserAccount @relation(fields: [mits_uid], references: [mits_uid])
+  Analytics     Analytics[]
+  ClassFaculty  ClassFaculty[]
+  Departments   Departments    @relation(fields: [department_id], references: [dept_id])
+  UserAccount   UserAccount    @relation(fields: [mits_uid], references: [mits_uid])
 
   @@index([is_active])
   @@index([department_id])
 }
 
 model Procedures {
-  proc_id            String  @id
-  title              String
-  desc_first_50_char String?
-  is_active          Boolean @default(true)
-  deleted_at         DateTime?
-  created_by         String?
-
+  proc_id             String                @id
+  title               String
+  desc_first_50_char  String?
+  is_active           Boolean               @default(true)
+  deleted_at          DateTime?
+  created_by          String?
   ProcedureVisibility ProcedureVisibility[]
   Requests            Requests[]
 
@@ -138,49 +128,46 @@ model Procedures {
 }
 
 model ProcedureVisibility {
-  proc_id   String
-  user_type Int
-
+  proc_id    String
+  user_type  Int
   Procedures Procedures @relation(fields: [proc_id], references: [proc_id])
 
   @@id([proc_id, user_type])
 }
 
 model Requests {
-  req_id     String   @id
-  proc_id    String
-  created_by String
-  created_at DateTime @default(now())
-  status     Int
-
-  Procedures  Procedures  @relation(fields: [proc_id], references: [proc_id])
+  req_id      String      @id
+  proc_id     String
+  created_by  String
+  created_at  DateTime    @default(now())
+  status      Int
   UserAccount UserAccount @relation(fields: [created_by], references: [mits_uid])
+  Procedures  Procedures  @relation(fields: [proc_id], references: [proc_id])
+  ToApprove   ToApprove[]
 
   @@index([created_by])
   @@index([proc_id])
 }
 
 model RoleMapping {
-  role_mapping_id Int     @id
+  role_mapping_id Int         @id
   role_id         Int
   mits_uid        String
-  is_active       Boolean @default(true)
+  is_active       Boolean     @default(true)
   deleted_at      DateTime?
-
-  Roles       Roles       @relation(fields: [role_id], references: [role_id])
-  UserAccount UserAccount @relation(fields: [mits_uid], references: [mits_uid])
+  UserAccount     UserAccount @relation(fields: [mits_uid], references: [mits_uid])
+  Roles           Roles       @relation(fields: [role_id], references: [role_id])
 
   @@index([is_active])
   @@index([mits_uid])
 }
 
 model Roles {
-  role_id    Int     @id
-  role_tag   String  @unique
-  role_desc  String?
-  is_active  Boolean @default(true)
-  deleted_at DateTime?
-
+  role_id      Int            @id
+  role_tag     String         @unique
+  role_desc    String?
+  is_active    Boolean        @default(true)
+  deleted_at   DateTime?
   Analytics    Analytics[]
   ClassFaculty ClassFaculty[]
   ClubAdmin    ClubAdmin[]
@@ -191,16 +178,15 @@ model Roles {
 }
 
 model Student {
-  mits_uid   String  @id
-  name       String
-  batch_id   Int
-  class_id   Int
-  hosteller  Boolean
-  gender     String?
-  phone      String? @unique
-  is_active  Boolean @default(true)
-  deleted_at DateTime?
-
+  mits_uid    String      @id
+  name        String
+  batch_id    Int
+  class_id    Int
+  hosteller   Boolean
+  gender      String?
+  phone       String?     @unique
+  is_active   Boolean     @default(true)
+  deleted_at  DateTime?
   Batches     Batches     @relation(fields: [batch_id], references: [batch_id])
   Classes     Classes     @relation(fields: [class_id], references: [class_id])
   UserAccount UserAccount @relation(fields: [mits_uid], references: [mits_uid])
@@ -210,28 +196,39 @@ model Student {
 }
 
 model UserAccount {
-  mits_uid   String  @id
-  auth_uid   String  @unique
-  email      String? @unique
-  user_type  Int
-  is_active  Boolean @default(true)
-  deleted_at DateTime?
-
+  mits_uid    String        @id
+  auth_uid    String        @unique
+  user_type   Int
+  is_active   Boolean       @default(true)
+  deleted_at  DateTime?
+  email       String?       @unique
   Faculty     Faculty?
-  Student     Student?
   Requests    Requests[]
   RoleMapping RoleMapping[]
-  UserTypes   UserTypes @relation(fields: [user_type], references: [user_type_id])
+  Student     Student?
+  ToApprove   ToApprove[]
+  UserTypes   UserTypes     @relation(fields: [user_type], references: [user_type_id])
 
   @@index([is_active])
   @@index([user_type])
 }
 
 model UserTypes {
-  user_type_id  Int     @id
-  user_type_tag String  @unique
+  user_type_id  Int           @id
+  user_type_tag String        @unique
   description   String?
-  is_active     Boolean @default(true)
+  is_active     Boolean       @default(true)
+  UserAccount   UserAccount[]
+}
 
-  UserAccount UserAccount[]
+model ToApprove {
+  req_id        String
+  created_at    DateTime    @default(now()) @db.Timestamptz(6)
+  approverUID   String
+  approvalLevel Int?
+  approvalType  String?
+  UserAccount   UserAccount @relation(fields: [approverUID], references: [mits_uid], onDelete: NoAction, onUpdate: NoAction)
+  Requests      Requests    @relation(fields: [req_id], references: [req_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([req_id, approverUID])
 }

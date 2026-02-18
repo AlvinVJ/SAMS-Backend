@@ -8,19 +8,24 @@ async function resolveApproversForRole(
   roleTag: string,
   requesterUid: string
 ): Promise<string[]> {
-  console.log(roleTag, requesterUid);
-  if (roleTag === "class_advisor") {
+  console.log(`Resolving approvers for role: ${roleTag}, requester: ${requesterUid}`);
+  const normalizedTag = roleTag.toLowerCase().trim();
+
+  // -------------------------------------------------------------
+  // 1. CLASS ADVISOR (Class-based role)
+  // -------------------------------------------------------------
+  if (normalizedTag === "class_advisor") {
     const student = await prisma.student.findUnique({
       where: { mits_uid: requesterUid },
       select: { class_id: true },
     });
 
-    if (!student) return [];
+    if (!student || !student.class_id) return [];
 
     const advisors = await prisma.classFaculty.findMany({
       where: {
         class_id: student.class_id,
-        role_tag: "class_advisor",
+        role_tag: { equals: "class_advisor", mode: 'insensitive' }, // Case-insensitive fix
         is_active: true,
         deleted_at: null,
       },
@@ -30,8 +35,74 @@ async function resolveApproversForRole(
     return advisors.map(a => a.mits_uid);
   }
 
-  const role = await prisma.roles.findUnique({
-    where: { role_tag: roleTag },
+  // -------------------------------------------------------------
+  // 2. HOD / ASSISTANT HOD (Department-based + Global Role)
+  // -------------------------------------------------------------
+  if (normalizedTag === "hod" || normalizedTag === "assistant_hod") {
+    // A. FIND REQUESTER'S DEPARTMENT
+    let deptId: number | null = null;
+
+    // Check if student
+    const student = await prisma.student.findUnique({
+      where: { mits_uid: requesterUid },
+      include: { Classes: true }
+    });
+
+    if (student && student.Classes) {
+      deptId = student.Classes.dept_id;
+    } else {
+      // Check if faculty
+      const faculty = await prisma.faculty.findUnique({
+        where: { mits_uid: requesterUid },
+        select: { department_id: true }
+      });
+      if (faculty) {
+        deptId = faculty.department_id;
+      }
+    }
+
+    if (!deptId) {
+      console.warn(`Could not determine department for requester ${requesterUid}, cannot resolve ${roleTag}`);
+      return [];
+    }
+
+    // B. FIND USERS WITH THIS GLOBAL ROLE
+    const role = await prisma.roles.findFirst({
+      where: { role_tag: { equals: normalizedTag, mode: 'insensitive' } },
+      select: { role_id: true },
+    });
+
+    if (!role) return [];
+
+    const potentialApprovers = await prisma.roleMapping.findMany({
+      where: {
+        role_id: role.role_id,
+        is_active: true,
+        deleted_at: null,
+      },
+      include: {
+        UserAccount: {
+          include: {
+            Faculty: true // We need this to check THEIR department
+          }
+        }
+      }
+    });
+
+    // C. FILTER BY SAME DEPARTMENT
+    // The approver must belong to the SAME department as the requester
+    const departmentApprovers = potentialApprovers.filter(mapping => {
+      return mapping.UserAccount?.Faculty?.department_id === deptId;
+    });
+
+    return departmentApprovers.map(m => m.mits_uid);
+  }
+
+  // -------------------------------------------------------------
+  // 3. GENERIC GLOBAL ROLES (Principal, etc.)
+  // -------------------------------------------------------------
+  const role = await prisma.roles.findFirst({
+    where: { role_tag: { equals: normalizedTag, mode: 'insensitive' } },
     select: { role_id: true },
   });
 
