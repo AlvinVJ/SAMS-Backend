@@ -1,182 +1,596 @@
 import { prisma } from "../db/prisma.js";
-import { firebaseAuth, firestore } from "../config/firebase.js";
-import admin from "../config/firebase.js";
+import { firestore } from "../config/firebase.js";
 
 interface Result {
-    success: boolean;
-    statusCode: number;
-    message: string;
-    data?: any;
+  success: boolean;
+  statusCode: number;
+  message: string;
+  data?: any;
 }
 
-interface inputPayload {
-    headers: {
-        authorization?: string | undefined;
-    };
-    body: {
-        procedure?: any;
-    };
-    user: any;
+async function getUserNameFromUid(uid: string): Promise<string> {
+  const account = await prisma.userAccount.findUnique({
+    where: { mits_uid: uid },
+    include: { Faculty: true, Student: true },
+  });
+  if (account?.Faculty?.name) return account.Faculty.name;
+  if (account?.Student?.name) return account.Student.name;
+  return "Unknown User";
 }
 
-async function resolveApproversForRole(
-  roleTag: string,
-  requesterUid: string
-): Promise<string[]> {
-  console.log(roleTag, requesterUid);
-  if (roleTag === "class_advisor") {
+async function resolveApproversForRole(roleTag: string, requesterUid: string): Promise<string[]> {
+  const normalizedTag = roleTag.toLowerCase();
+  if (normalizedTag === "class_advisor") {
     const student = await prisma.student.findUnique({
       where: { mits_uid: requesterUid },
       select: { class_id: true },
     });
-
-    if (!student) return [];
-
+    if (!student || !student.class_id) return [];
     const advisors = await prisma.classFaculty.findMany({
       where: {
         class_id: student.class_id,
-        role_tag: "class_advisor",
+        role_tag: { equals: "class_advisor", mode: 'insensitive' },
         is_active: true,
         deleted_at: null,
       },
       select: { mits_uid: true },
     });
-
     return advisors.map(a => a.mits_uid);
   }
-
-  const role = await prisma.roles.findUnique({
-    where: { role_tag: roleTag },
+  const role = await prisma.roles.findFirst({
+    where: { role_tag: { equals: normalizedTag, mode: 'insensitive' } },
     select: { role_id: true },
   });
-
   if (!role) return [];
-
   const mappings = await prisma.roleMapping.findMany({
-    where: {
-      role_id: role.role_id,
-      is_active: true,
-      deleted_at: null,
-    },
+    where: { role_id: role.role_id, is_active: true, deleted_at: null },
     select: { mits_uid: true },
   });
-
   return mappings.map(m => m.mits_uid);
 }
 
-export async function getRequestsToApproveService(
-  payload: inputPayload
-) {
+export async function getRequestsToApproveService(payload: any) {
   try {
-    const { mits_uid, role } = payload.user;
+    const mits_uid = (payload.user.mits_uid as string);
+    const normalizedFacultyUid = mits_uid.trim().toLowerCase();
+    const selectedRole = (payload.query?.role as string)?.trim().toLowerCase();
 
-    /* ---------------------------------- */
-    /* 1️⃣ Authorization check            */
-    /* ---------------------------------- */
-    if (role !== "faculty" && role !== "admin") {
-      return {
-        success: false,
-        statusCode: 403,
-        message: "Not authorized to approve requests",
-      };
+    if (!selectedRole) {
+      return { success: false, statusCode: 400, message: "Role parameter is required" };
     }
 
-    /* ---------------------------------- */
-    /* 2️⃣ Fetch pending requests (SQL)   */
-    /* ---------------------------------- */
     const pendingRequests = await prisma.requests.findMany({
-      where: {
-        status: 0, // PENDING
-      },
+      where: { status: 0 },
       include: {
-        Procedures: {
-          select: {
-            title: true,
-          },
-        },
+        Procedures: true,
+        UserAccount: {
+          include: {
+            Student: {
+              include: {
+                Classes: {
+                  include: { Departments: true }
+                }
+              }
+            }
+          }
+        }
       },
     });
 
     const approvableRequests: any[] = [];
 
-    /* ---------------------------------- */
-    /* 3️⃣ Walk each request (Firebase)   */
-    /* ---------------------------------- */
     for (const req of pendingRequests) {
-      const snap = await firestore
-        .collection("requests")
-        .doc(req.req_id)
-        .get();
-
+      const snap = await firestore.collection("requests").doc(req.req_id).get();
       if (!snap.exists) continue;
 
-      const data = snap.data();
-      if (!data) continue;
+      const data = snap.data()!;
+      const currentLevel = data.current_level;
 
-      const currentLevel: number = data.current_level;
+      const procDoc = await firestore.collection("procedures").doc(req.proc_id).get();
+      const procedureDef = procDoc.exists ? procDoc.data() : null;
+      const levelDef = procedureDef?.approvalLevels?.find((l: any) => l.level === currentLevel);
+      const allowedRoles = (levelDef?.roleIds || [levelDef?.role] || []).filter(Boolean).map((r: string) => r.trim().toLowerCase());
 
-      const levelBlock = data.approval_progress?.find(
-        (lvl: any) => lvl.level === currentLevel
-      );
+      // If filtering by a specific role (not "all"), must be in allowed roles
+      if (selectedRole !== "all" && !allowedRoles.includes(selectedRole)) continue;
 
-      if (!levelBlock) continue;
+      // Ensure the faculty is actually an approver for this request at the current level
+      const currentLevelBlock = data.approval_progress?.find((lvl: any) => lvl.level === currentLevel);
+      const isApproverAtThisLevel = currentLevelBlock?.decisions?.some((d: any) => d.mits_uid?.trim().toLowerCase() === normalizedFacultyUid);
 
-      /* ---------------------------------- */
-      /* 4️⃣ State-based eligibility check  */
-      /* ---------------------------------- */
+      if (!isApproverAtThisLevel) continue;
 
-      // level must still need approvals
-      // 1️⃣ Level must still be active
-      if (levelBlock.net_status !== "PENDING") continue;
+      const approvalHistory: any[] = [];
+      const historyBlocks = (data.approval_progress || []).filter((lvl: any) => lvl.level < currentLevel);
+      for (const block of historyBlocks) {
+        const levelDefHistory = procedureDef?.approvalLevels?.find((l: any) => l.level === block.level);
+        const fallbackRole = levelDefHistory?.role || levelDefHistory?.roleIds?.[0] || "Approver";
+        for (const decision of block.decisions) {
+          if (decision.decision) {
+            approvalHistory.push({
+              level: block.level,
+              approverName: await getUserNameFromUid(decision.mits_uid),
+              role: (decision.role || block.role || fallbackRole).replaceAll('_', ' ').toUpperCase(),
+              status: decision.decision,
+              comments: decision.comments,
+              timestamp: decision.timestamp ? decision.timestamp.split('T')[0] : ""
+            });
+          }
+        }
+      }
 
-      // 2️⃣ Find user's slot
-      const myDecisionEntry = levelBlock.decisions.find(
-        (d: any) => d.mits_uid === mits_uid
-      );
+      const levelBlock = data.approval_progress?.find((lvl: any) => lvl.level === currentLevel);
+      if (!levelBlock || levelBlock.net_status !== "PENDING") continue;
+      // Skip if they already acted in THIS level
+      if (levelBlock.decisions.find((d: any) => d.mits_uid?.trim().toLowerCase() === normalizedFacultyUid && d.decision)) continue;
 
-      // 3️⃣ User must be an intended approver
-      if (!myDecisionEntry) continue;
-
-      // 4️⃣ User must not have already acted
-      if (myDecisionEntry.decision) continue;
-
-      // 5️⃣ Level must still need approvals
-      const approvalsDone = levelBlock.decisions.filter(
-        (d: any) => d.decision
-      ).length;
-
-      if (approvalsDone >= levelBlock.required_approvals) continue;
-
-      
-      /* ---------------------------------- */
-      /* 5️⃣ Collect response               */
-      /* ---------------------------------- */
       approvableRequests.push({
-        request_id: req.req_id,
-        procedure_title: req.Procedures.title,
-        created_by: req.created_by,
-        current_level: currentLevel,
+        id: req.req_id,
+        type: req.Procedures?.title || "Request",
+        studentName: req.UserAccount?.Student?.name || data.studentName || "Unknown",
+        studentId: req.created_by,
+        department: req.UserAccount?.Student?.Classes?.Departments?.dept_name || "N/A",
+        date: req.created_at.toISOString().split("T")[0],
+        description: (data.formData || data.form_response) ? Object.entries(data.formData || data.form_response).map(([k, v]) => `${k}: ${v}`).join(" | ") : "No description",
+        attachments: data.attachments || [],
+        roleTag: selectedRole,
+        color: "blue",
+        formData: data.formData || data.form_response || {},
+        approvalHistory: approvalHistory
       });
     }
 
-    /* ---------------------------------- */
-    /* 6️⃣ Return result                  */
-    /* ---------------------------------- */
+    return { success: true, statusCode: 200, message: "Pending requests fetched", data: { requests: approvableRequests } };
+  } catch (error: any) {
+    console.error("getRequestsToApproveService error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function approveRequestService(payload: any): Promise<Result> {
+  try {
+    const mits_uid = (payload.user.mits_uid as string);
+    const normalizedFacultyUid = mits_uid.trim().toLowerCase();
+    const { requestId, role, comments } = payload.body;
+    const normalizedRole = (role as string)?.trim().toLowerCase();
+
+    const requestRef = firestore.collection("requests").doc(requestId);
+    const snap = await requestRef.get();
+    if (!snap.exists) return { success: false, statusCode: 404, message: "Request not found" };
+
+    const data = snap.data()!;
+    const approvalProgress = data.approval_progress || [];
+    const currentLevel = data.current_level;
+    const levelBlock = approvalProgress.find((lvl: any) => lvl.level === currentLevel);
+    const myDecision = levelBlock?.decisions.find((d: any) => d.mits_uid?.trim().toLowerCase() === normalizedFacultyUid);
+    if (!myDecision) return { success: false, statusCode: 403, message: "Not authorized" };
+
+    myDecision.decision = "APPROVED";
+    myDecision.timestamp = new Date().toISOString();
+    myDecision.comments = comments || null;
+    myDecision.role = role;
+
+    const approvalsDone = levelBlock.decisions.filter((d: any) => d.decision === "APPROVED").length;
+    if (approvalsDone >= levelBlock.required_approvals) {
+      levelBlock.net_status = "APPROVED";
+      const procSnap = await firestore.collection("procedures").doc(data.procId).get();
+      const procedure = procSnap.data();
+      const nextLevelNum = currentLevel + 1;
+      const nextLevelDef = procedure?.approvalLevels?.find((l: any) => l.level === nextLevelNum);
+
+      if (nextLevelDef) {
+        data.current_level = nextLevelNum;
+        let nextApprovers: string[] = [];
+        for (const roleTag of (nextLevelDef.roleIds || [nextLevelDef.role])) {
+          const uids = await resolveApproversForRole(roleTag, data.studentId);
+          nextApprovers.push(...uids);
+        }
+        nextApprovers = [...new Set(nextApprovers)];
+        approvalProgress.push({
+          level: nextLevelNum,
+          net_status: "PENDING",
+          required_approvals: nextLevelDef.allMustApprove ? nextApprovers.length : (nextLevelDef.minApprovals || 1),
+          decisions: nextApprovers.map(uid => ({ mits_uid: uid }))
+        });
+      } else {
+        data.status = "APPROVED";
+        await prisma.requests.update({ where: { req_id: requestId }, data: { status: 1 } });
+      }
+    }
+
+    await requestRef.update({
+      approval_progress: approvalProgress,
+      current_level: data.current_level,
+      status: data.status,
+      last_updated_at: new Date().toISOString()
+    });
+
+    // Sync to SQL Analytics table
+    try {
+      if (normalizedRole) {
+        const roleRow = await prisma.roles.findFirst({
+          where: { role_tag: { equals: normalizedRole, mode: 'insensitive' } }
+        });
+        if (roleRow) {
+          await prisma.analytics.upsert({
+            where: { mits_uid_role_id: { mits_uid: mits_uid.trim(), role_id: roleRow.role_id } },
+            create: { mits_uid: mits_uid.trim(), role_id: roleRow.role_id, approved: 1, pending: 0 },
+            update: { approved: { increment: 1 } }
+          });
+        }
+      }
+    } catch (e) {
+      console.error("Failed to update SQL Analytics:", e);
+    }
+
+    return { success: true, statusCode: 200, message: "Request approved" };
+  } catch (error) {
+    console.error("approveRequestService error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function rejectRequestService(payload: any): Promise<Result> {
+  try {
+    const mits_uid = (payload.user.mits_uid as string);
+    const normalizedFacultyUid = mits_uid.trim().toLowerCase();
+    const { requestId, role, reason } = payload.body;
+    const normalizedRole = (role as string)?.trim().toLowerCase();
+
+    if (!requestId || !role || !reason) {
+      return { success: false, statusCode: 400, message: "requestId, role, and reason are required" };
+    }
+
+    const requestRef = firestore.collection("requests").doc(requestId);
+    const snap = await requestRef.get();
+    if (!snap.exists) return { success: false, statusCode: 404, message: "Request not found" };
+
+    const data = snap.data()!;
+    const approvalProgress = data.approval_progress || [];
+    const currentLevel = data.current_level;
+    const levelBlock = approvalProgress.find((lvl: any) => lvl.level === currentLevel);
+    const myDecision = levelBlock?.decisions.find((d: any) => d.mits_uid?.trim().toLowerCase() === normalizedFacultyUid);
+
+    if (myDecision) {
+      myDecision.decision = "REJECTED";
+      myDecision.timestamp = new Date().toISOString();
+      myDecision.comments = reason; // Save as comments for timeline
+      myDecision.role = role;
+    }
+
+    await requestRef.update({
+      approval_progress: approvalProgress,
+      status: "REJECTED",
+      rejection_info: {
+        rejected_by: mits_uid.trim(),
+        role: role,
+        reason: reason,
+        timestamp: new Date().toISOString()
+      },
+      last_updated_at: new Date().toISOString()
+    });
+
+    await prisma.requests.update({
+      where: { req_id: requestId },
+      data: { status: 2 }
+    });
+
+    // Sync to SQL Analytics table
+    try {
+      if (normalizedRole) {
+        const roleRow = await prisma.roles.findFirst({
+          where: { role_tag: { equals: normalizedRole, mode: 'insensitive' } }
+        });
+        if (roleRow) {
+          await prisma.analytics.upsert({
+            where: { mits_uid_role_id: { mits_uid: mits_uid.trim(), role_id: roleRow.role_id } },
+            create: { mits_uid: mits_uid.trim(), role_id: roleRow.role_id, rejected: 1, pending: 0 },
+            update: { rejected: { increment: 1 } }
+          });
+        }
+      }
+    } catch (e) {
+      console.error("Failed to update SQL Analytics:", e);
+    }
+
+    return { success: true, statusCode: 200, message: "Request rejected" };
+  } catch (error) {
+    console.error("rejectRequestService error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function getActedRequestsService(user: any): Promise<Result> {
+  try {
+    const userAccount = await prisma.userAccount.findUnique({ where: { auth_uid: user.uid } });
+    if (!userAccount) return { success: false, statusCode: 404, message: "Faculty account not found" };
+    const facultyUid = userAccount.mits_uid;
+
+    const requestsSnap = await firestore.collection("requests").get();
+    const actedRequests: any[] = [];
+
+    for (const doc of requestsSnap.docs) {
+      const data = doc.data();
+      let actedOn = false;
+      const normalizedFacultyUid = facultyUid.toLowerCase();
+      for (const level of (data.approval_progress || [])) {
+        if (level.decisions?.some((d: any) => d.mits_uid?.toLowerCase() === normalizedFacultyUid && d.decision)) {
+          actedOn = true;
+          break;
+        }
+      }
+      if (actedOn) {
+        const req_id = doc.id;
+        const prismaReq = await prisma.requests.findUnique({ where: { req_id }, include: { Procedures: true } });
+        const procDoc = await firestore.collection("procedures").doc(prismaReq?.proc_id || "").get();
+        const total_levels = procDoc.exists ? (procDoc.data()?.approvalLevels?.length || 1) : 1;
+
+        let status_text = "Pending";
+        let color = "warning";
+        if (prismaReq?.status === 1) { status_text = "Approved"; color = "success"; }
+        else if (prismaReq?.status === 2) { status_text = "Rejected"; color = "error"; }
+        else if (prismaReq) {
+          const activeLevel = procDoc.data()?.approvalLevels?.find((l: any) => l.level === data.current_level);
+          const roleName = (activeLevel?.role || activeLevel?.roleIds?.[0] || "Approver").replaceAll('_', ' ').toUpperCase();
+          status_text = `Pending ${roleName}`;
+        }
+
+        const userData = await prisma.userAccount.findUnique({
+          where: { mits_uid: prismaReq?.created_by || "" },
+          include: { Student: { include: { Classes: { include: { Departments: true } } } } }
+        });
+
+        let approvalHistory: any[] = [];
+        const historyBlocks = (data.approval_progress || []);
+        for (const block of historyBlocks) {
+          const levelDefHistory = procDoc.data()?.approvalLevels?.find((l: any) => l.level === block.level);
+          const fallbackRole = levelDefHistory?.role || levelDefHistory?.roleIds?.[0] || "Approver";
+          for (const decision of block.decisions) {
+            if (decision.decision) {
+              const histEntry = {
+                level: block.level,
+                approverName: await getUserNameFromUid(decision.mits_uid),
+                role: (decision.role || block.role || fallbackRole).replaceAll('_', ' ').toUpperCase(),
+                status: decision.decision,
+                comments: decision.comments,
+                timestamp: decision.timestamp ? decision.timestamp.split('T')[0] : ""
+              };
+              console.log(`[DEBUG] History entry for ${req_id} level ${block.level}:`, histEntry);
+              approvalHistory.push(histEntry);
+            }
+          }
+        }
+
+        actedRequests.push({
+          req_id,
+          procedure_title: prismaReq?.Procedures?.title || "Unknown Request",
+          created_at: prismaReq?.created_at,
+          status: prismaReq?.status,
+          status_text,
+          color,
+          current_level: data.current_level || 1,
+          total_levels,
+          formData: data.formData || data.form_response || {},
+          studentName: userData?.Student?.name || data.studentName || "Unknown",
+          studentId: prismaReq?.created_by,
+          department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
+          roleTag: (procDoc.data()?.approvalLevels?.find((l: any) => l.level === data.current_level)?.role || "Approver"),
+          approvalHistory: approvalHistory
+        });
+      }
+    }
+    return { success: true, statusCode: 200, message: "Acted requests fetched", data: actedRequests };
+  } catch (error) {
+    console.error("getActedRequestsService error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function getFacultyDashboardDataService(user: any, query: any): Promise<Result> {
+  try {
+    const userAccount = await prisma.userAccount.findUnique({ where: { auth_uid: user.uid } });
+    if (!userAccount) return { success: false, statusCode: 404, message: "Faculty account not found" };
+    const facultyUid = userAccount.mits_uid.trim();
+    const selectedRole = (query?.role as string)?.trim().toLowerCase();
+
+    // 1. Fetch Approved/Rejected stats from SQL Analytics table
+    let approvedCount = 0;
+    let rejectedCount = 0;
+
+    if (selectedRole && selectedRole !== "all") {
+      const roleRow = await prisma.roles.findFirst({
+        where: { role_tag: { equals: selectedRole, mode: 'insensitive' } }
+      });
+      if (roleRow) {
+        const stats = await prisma.analytics.findUnique({
+          where: { mits_uid_role_id: { mits_uid: facultyUid, role_id: roleRow.role_id } }
+        });
+        approvedCount = stats?.approved || 0;
+        rejectedCount = stats?.rejected || 0;
+      }
+    } else {
+      // "all" role: Sum stats for all roles of this faculty
+      const stats = await prisma.analytics.aggregate({
+        where: { mits_uid: facultyUid },
+        _sum: { approved: true, rejected: true }
+      });
+      approvedCount = stats._sum.approved || 0;
+      rejectedCount = stats._sum.rejected || 0;
+    }
+
+    // 2. Consolidate Firestore scanning for Breakdown
+    const procTitlesSnap = await prisma.procedures.findMany({ select: { proc_id: true, title: true } });
+    const procMap: Record<string, string> = {};
+    procTitlesSnap.forEach(p => procMap[p.proc_id] = p.title);
+
+    const typeBreakdown: Record<string, number> = {};
+    const requestsSnap = await firestore.collection("requests").get();
+    const normalizedFacultyUid = facultyUid.toLowerCase();
+
+    for (const doc of requestsSnap.docs) {
+      const data = doc.data();
+      const title = procMap[data.procId] || "Unknown";
+
+      for (const level of (data.approval_progress || [])) {
+        for (const decision of (level.decisions || [])) {
+          if (decision.mits_uid?.trim().toLowerCase() === normalizedFacultyUid && decision.decision) {
+            const decisionRole = (decision.role || level.role || "approver").trim().toLowerCase();
+            if (!selectedRole || selectedRole === "all" || decisionRole === selectedRole) {
+              typeBreakdown[title] = (typeBreakdown[title] || 0) + 1;
+            }
+          }
+        }
+      }
+    }
+
+    // 3. Fetch Pending Approvals for this faculty
+    const pendingApprovals = await getRequestsToApproveService({ user: { mits_uid: facultyUid }, query: { role: selectedRole || "all" } });
+    const pendingList = (pendingApprovals.success && pendingApprovals.data) ? (pendingApprovals.data.requests || []) : [];
+    const pendingCount = pendingList.length;
+
+    // 4. Formatting output
     return {
       success: true,
       statusCode: 200,
-      message: "Pending approval requests fetched",
+      message: "Dashboard data fetched",
       data: {
-        requests: approvableRequests,
-      },
+        stats: {
+          pending: pendingCount,
+          approved: approvedCount,
+          rejected: rejectedCount,
+          total: approvedCount + rejectedCount + pendingCount
+        },
+        breakdown: Object.entries(typeBreakdown).map(([label, count]) => ({ label, count })),
+        recentPending: pendingList.slice(0, 3).map((r: any) => ({
+          id: r.id,
+          subject: r.type,
+          date: r.date,
+          status: "Pending Your Action"
+        })),
+        updates: [
+          { msg: `You have ${pendingCount} new requests waiting for approval.`, time: "Just now", color: "blue" },
+          { msg: `Total requests processed by you: ${approvedCount + rejectedCount}`, time: "Today", color: "green" }
+        ]
+      }
     };
   } catch (error) {
-    console.error("getRequestsToApproveService error:", error);
+    console.error("getFacultyDashboardDataService error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function getFacultyProfileService(user: any): Promise<Result> {
+  try {
+    const userAccount = await prisma.userAccount.findUnique({
+      where: { auth_uid: user.uid },
+      include: {
+        Faculty: {
+          include: {
+            Departments: true,
+            ClassFaculty: {
+              include: {
+                Classes: true
+              }
+            }
+          }
+        },
+        RoleMapping: {
+          include: {
+            Roles: true
+          }
+        }
+      }
+    });
+
+    if (!userAccount || !userAccount.Faculty) {
+      return { success: false, statusCode: 404, message: "Faculty profile not found" };
+    }
+
+    const faculty = userAccount.Faculty;
+
+    // Group assigned classes with their roles
+    const assignedClasses = faculty.ClassFaculty.map(cf => ({
+      className: cf.Classes.class,
+      role: cf.role_tag.replaceAll('_', ' ').toUpperCase()
+    }));
+
+    // Get organizational roles
+    const roles = userAccount.RoleMapping.map(rm => rm.Roles.role_tag.replaceAll('_', ' ').toUpperCase());
 
     return {
-      success: false,
-      statusCode: 500,
-      message: "Internal server error",
+      success: true,
+      statusCode: 200,
+      message: "Faculty profile fetched",
+      data: {
+        mits_uid: faculty.mits_uid,
+        name: faculty.name,
+        email: faculty.email,
+        department: faculty.Departments.dept_name,
+        assignedClasses: assignedClasses,
+        roles: roles,
+        // Since designation is not in schema yet, we use a default or null
+        designation: "Faculty Member"
+      }
     };
+  } catch (error) {
+    console.error("getFacultyProfileService error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function getFacultyNotificationsService(user: any): Promise<Result> {
+  try {
+    const userAccount = await prisma.userAccount.findUnique({ where: { auth_uid: user.uid } });
+    if (!userAccount) return { success: false, statusCode: 404, message: "Faculty account not found" };
+    const facultyUid = userAccount.mits_uid.trim();
+
+    const notifications: any[] = [];
+
+    // 1. Fetch requests created by this faculty (Status Updates)
+    const myRequests = await prisma.requests.findMany({
+      where: { created_by: facultyUid },
+      include: { Procedures: true },
+      orderBy: { created_at: 'desc' },
+      take: 10
+    });
+
+    myRequests.forEach(req => {
+      let statusText = "submitted";
+      let type = "info";
+      if (req.status === 1) { statusText = "approved"; type = "success"; }
+      if (req.status === 2) { statusText = "rejected"; type = "error"; }
+
+      notifications.push({
+        id: `own-${req.req_id}`,
+        title: `Request ${statusText.charAt(0).toUpperCase() + statusText.slice(1)}`,
+        description: `Your request for "${req.Procedures.title}" has been ${statusText}.`,
+        time: req.created_at.toISOString(),
+        isUnread: false,
+        type: type
+      });
+    });
+
+    // 2. Fetch requests pending their approval (Action Required)
+    const pendingResult = await getRequestsToApproveService({ user: { mits_uid: facultyUid }, query: { role: "all" } });
+    if (pendingResult.success && pendingResult.data?.requests) {
+      pendingResult.data.requests.forEach((req: any) => {
+        notifications.push({
+          id: `pending-${req.id}`,
+          title: "Action Required",
+          description: `${req.studentName} has submitted a "${req.type}" for your approval.`,
+          time: new Date(req.date).toISOString(), // Mocking time from date
+          isUnread: true,
+          type: "warning"
+        });
+      });
+    }
+
+    // Sort all notifications by time desc
+    notifications.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
+
+    return { success: true, statusCode: 200, message: "Notifications fetched", data: notifications };
+  } catch (error) {
+    console.error("getFacultyNotificationsService error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
   }
 }

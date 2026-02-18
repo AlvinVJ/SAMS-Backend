@@ -1,6 +1,7 @@
 import { prisma } from "../db/prisma.js";
 import admin from "../config/firebase.js";
-import {firebaseAuth, firestore} from "../config/firebase.js";
+import { firebaseAuth, firestore } from "../config/firebase.js";
+import { processPlacementAttendance } from "./placement.service.js";
 
 
 async function resolveApproversForRole(
@@ -103,15 +104,15 @@ async function buildInitialApprovalProgress(
 
 
 interface BasicResult {
-    success: boolean;
-    statusCode: number;
-    message: string;
-    data?: any;
+  success: boolean;
+  statusCode: number;
+  message: string;
+  data?: any;
 
 }
 interface BasicPayload {
-    user: {uid: string, email: string, role: string, mits_uid: string}
-    body: any;
+  user: { uid: string, email: string, role: string, mits_uid: string }
+  body: any;
 }
 
 function isStudentEmail(email: string): boolean {
@@ -120,116 +121,126 @@ function isStudentEmail(email: string): boolean {
 }
 
 export async function signup(payload: BasicPayload): Promise<BasicResult> {
-    try {
-        const db = firestore;
-        const isStudent = isStudentEmail(payload.user.email);
+  try {
+    const db = firestore;
+    const isStudent = isStudentEmail(payload.user.email);
 
-        let role: "student" | "faculty" | "admin";
-        let emailPrefix = payload.user.email.split("@")[0];
-        if (emailPrefix==null){
-            return {
-                success: false,
-                statusCode: 404,
-                message: "email not found",
-            };
-        }
-
-        if (isStudent) {
-            role = "student";
-        } else {
-            const userDetailsSnap = await db
-                .collection("userDetails")
-                .doc(emailPrefix)
-                .get();
-
-            if (!userDetailsSnap.exists) {
-                return {
-                    success: false,
-                    statusCode: 403,
-                    message: "User not authorized to sign up",
-                };
-            }
-
-            const userData = userDetailsSnap.data()!;
-            role = userData.role;
-        }
-
-
-        const profileRef = db.collection("profiles").doc(emailPrefix);
-        const profileSnap = await profileRef.get();
-
-        if (!profileSnap.exists) {
-            await profileRef.set({
-                banned: false,
-                email: payload.user.email,
-                isActive: true,
-                createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                role: role,
-                uid: emailPrefix.toUpperCase()
-            });
-        }
-
-        const existingUser = await prisma.userAccount.findUnique({
-            where: { mits_uid: emailPrefix },
-        });
-
-        if (!existingUser) {
-            let userType: number | null;
-            let role = payload.user.role;
-
-            if (role === "admin") userType = 2;
-            else if (role === "faculty") userType = 1;
-            else if (role === "student") userType = 0; // student
-            else userType = null;
-
-
-            if(userType==null) {
-                return {
-                    success: false,
-                    statusCode: 403,
-                    message: "invalid credentials initialized in whitelist table",
-                };
-            }
-            await prisma.userAccount.create({
-                data: {
-                    auth_uid: payload.user.uid,
-                    mits_uid: emailPrefix,
-                    user_type: userType
-                },
-            });
-            return {
-                success: true,
-                statusCode: 201,
-                message: "User signed up successfully",
-                data: {
-                    uid: payload.user.uid,
-                    email: payload.user.email,
-                    role: role,
-                },
-            };
-        }
-        else {
-            return {
-                success: true,
-                statusCode: 200,
-                message: "User already exists",
-                data: {
-                    uid: payload.user.uid,
-                    email: payload.user.email,
-                    role: role,
-                },
-            };
-
-        }
-    } catch (error) {
-        console.error("Signup service error:", error);
-
-        return {
-            success: false,
-            statusCode: 500,
-            message: "Internal server error",
-        };
+    let role: "student" | "faculty" | "admin";
+    let emailPrefix = payload.user.email.split("@")[0];
+    if (emailPrefix == null) {
+      return {
+        success: false,
+        statusCode: 404,
+        message: "email not found",
+      };
     }
+
+    if (isStudent) {
+      role = "student";
+    } else {
+      const userDetailsSnap = await db
+        .collection("userDetails")
+        .doc(emailPrefix)
+        .get();
+
+      if (!userDetailsSnap.exists) {
+        return {
+          success: false,
+          statusCode: 403,
+          message: "User not authorized to sign up",
+        };
+      }
+
+      const userData = userDetailsSnap.data()!;
+      role = userData.role;
+    }
+
+
+    const profileRef = db.collection("profiles").doc(emailPrefix);
+    const profileSnap = await profileRef.get();
+
+    if (!profileSnap.exists) {
+      await profileRef.set({
+        banned: false,
+        email: payload.user.email,
+        isActive: true,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        role: role,
+        uid: emailPrefix.toUpperCase()
+      });
+    }
+
+    console.log("Signup prefix:", emailPrefix);
+    const existingUser = await prisma.userAccount.findUnique({
+      where: { mits_uid: emailPrefix },
+    });
+
+    if (!existingUser) {
+      console.log("Creating new UserAccount for:", emailPrefix);
+      let userType: number | null;
+      let role = payload.user.role;
+
+      if (role === "admin") userType = 2;
+      else if (role === "faculty") userType = 1;
+      else if (role === "student") userType = 0; // student
+      else userType = null;
+
+
+      if (userType == null) {
+        return {
+          success: false,
+          statusCode: 403,
+          message: "invalid credentials initialized in whitelist table",
+        };
+      }
+      await prisma.userAccount.create({
+        data: {
+          auth_uid: payload.user.uid,
+          mits_uid: emailPrefix,
+          email: payload.user.email,
+          user_type: userType
+        },
+      });
+      return {
+        success: true,
+        statusCode: 201,
+        message: "User signed up successfully",
+        data: {
+          uid: payload.user.uid,
+          email: payload.user.email,
+          role: role,
+        },
+      };
+    }
+    else {
+      console.log("Existing user found. Current email:", existingUser.email, "New email:", payload.user.email);
+      if (existingUser.email !== payload.user.email) {
+        console.log("Updating email for user:", emailPrefix);
+        await prisma.userAccount.update({
+          where: { mits_uid: emailPrefix },
+          data: { email: payload.user.email },
+        });
+      }
+      return {
+        success: true,
+        statusCode: 200,
+        message: "User already exists",
+        data: {
+          uid: payload.user.uid,
+          email: payload.user.email,
+          role: payload.user.role,
+        },
+      };
+    }
+  } catch (error) {
+    console.error("Signup service error:", error);
+
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
 
 }
 
@@ -238,36 +249,68 @@ export async function fetch_procedures(
 ): Promise<BasicResult> {
   try {
     const { mits_uid, role } = payload.user;
-    let role_snap = await prisma.userAccount.findUnique({
-        where: {
-            mits_uid: mits_uid,
-        },
-        select: {
-            user_type: true,
-        }
+    // 1. Get primary user type
+    let user_snap = await prisma.userAccount.findFirst({
+      where: { mits_uid: { equals: mits_uid, mode: 'insensitive' } },
+      select: { user_type: true }
     });
 
-    const role_id = role_snap?.user_type;
+    if (!user_snap) {
+      return { success: false, statusCode: 403, message: "User not found" };
+    }
 
-    // 1. Fetch procedures visible to this user_type
-    const procedures = await prisma.procedures.findMany({
-      where: {
-        is_active: true,
-        ProcedureVisibility: {
-          some: {
-            user_type: role_id,
-          },
-        },
-      },
-      select: {
-        proc_id: true,
-        title: true,
-        desc_first_50_char: true,
-      },
-      orderBy: {
-        title: "asc",
-      },
+    const visibleTypes = [user_snap.user_type];
+
+    // 2. Fetch all roles assigned to this user (Global + Class-based)
+    const roleTags = new Set<string>();
+
+    const globalRoles = await prisma.roleMapping.findMany({
+      where: { mits_uid: { equals: mits_uid, mode: 'insensitive' }, is_active: true },
+      include: { Roles: true }
     });
+    globalRoles.forEach(r => roleTags.add(r.Roles.role_tag.toUpperCase()));
+
+    const classRoles = await prisma.classFaculty.findMany({
+      where: { mits_uid: { equals: mits_uid, mode: 'insensitive' }, is_active: true },
+      select: { role_tag: true }
+    });
+    classRoles.forEach(r => roleTags.add(r.role_tag.toUpperCase()));
+
+    // 3. Map specific roles to virtual user types for visibility
+    const normalize = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+    roleTags.forEach(tag => {
+      const norm = normalize(tag);
+      if (norm === 'CLUBLEAD') visibleTypes.push(3);
+      if (norm === 'PLACEMENTCOORDINATOR' || norm === 'PLACEMENTCOORD') {
+        if (!visibleTypes.includes(4)) visibleTypes.push(4);
+      }
+    });
+
+    // 4. Fetch procedures visible to any of these types
+    let allActiveProcs = await prisma.procedures.findMany({
+      where: { is_active: true },
+      include: { ProcedureVisibility: true }
+    });
+
+    // AUTO-REPAIR: If any active procedure has NO visibility, fix it now (one-time safety)
+    const proceduresToRepair = allActiveProcs.filter(p => p.ProcedureVisibility.length === 0);
+    if (proceduresToRepair.length > 0) {
+      for (const p of proceduresToRepair) {
+        const fallbackTypes = p.title.includes("Placement") ? [4, 1] : [1];
+        await prisma.procedureVisibility.createMany({
+          data: fallbackTypes.map(t => ({ proc_id: p.proc_id, user_type: t }))
+        });
+      }
+      allActiveProcs = await prisma.procedures.findMany({
+        where: { is_active: true },
+        include: { ProcedureVisibility: true }
+      });
+    }
+
+    const procedures = allActiveProcs.filter(p =>
+      p.ProcedureVisibility.some(v => visibleTypes.includes(v.user_type))
+    );
 
     return {
       success: true,
@@ -307,8 +350,8 @@ export async function create_request(
       };
     }
 
-    const user = await prisma.userAccount.findUnique({
-      where: { mits_uid },
+    const user = await prisma.userAccount.findFirst({
+      where: { mits_uid: { equals: mits_uid, mode: 'insensitive' } },
       select: { user_type: true },
     });
 
@@ -340,6 +383,27 @@ export async function create_request(
       };
     }
 
+    // ---------------------------------------------------------
+    // SYSTEM HOOK INTERCEPTION (Special Workflows)
+    // ---------------------------------------------------------
+    const procDoc = await firestore.collection("procedures").doc(procedureId).get();
+    const procData = procDoc.data();
+
+    if (procData?.system_hook === "PLACEMENT_BULK") {
+      // Find the student list in formData (it could be named 'student_list' or something like 'upload_student_list_csv')
+      const studentListData = formData.student_list ||
+        formData.upload_student_list_csv ||
+        Object.entries(formData).find(([k]) => k.includes('student_list'))?.[1] || [];
+
+      return await processPlacementAttendance({
+        procedureId: procedureId,
+        students: studentListData,
+        coordinatorUid: mits_uid,
+        eventName: formData.event_name || formData.title || formData.event_name_ || Object.entries(formData).find(([k]) => k.includes('event_name'))?.[1] || "Placement Event",
+        date: formData.event_date || formData.event_data || formData.date || new Date().toISOString().split('T')[0],
+      });
+    }
+
     const now = admin.firestore.FieldValue.serverTimestamp();
     const approval_progress = await buildInitialApprovalProgress(
       procedureId,
@@ -364,7 +428,7 @@ export async function create_request(
         club_id: null,
       },
 
-      form_response: formData,
+      formData,
 
       approval_progress, // initialized empty; filled later
     };
@@ -418,7 +482,7 @@ export async function getRoleTags(
     /* ---------------------------------- */
     const globalRoles = await prisma.roleMapping.findMany({
       where: {
-        mits_uid,
+        mits_uid: { equals: mits_uid, mode: 'insensitive' },
         is_active: true,
         deleted_at: null,
       },
@@ -436,7 +500,7 @@ export async function getRoleTags(
     /* ---------------------------------- */
     const classRoles = await prisma.classFaculty.findMany({
       where: {
-        mits_uid,
+        mits_uid: { equals: mits_uid, mode: 'insensitive' },
         is_active: true,
         deleted_at: null,
       },
@@ -446,35 +510,12 @@ export async function getRoleTags(
     });
 
     /* ---------------------------------- */
-    /* 3️⃣ Club-based roles               */
-    /* ---------------------------------- */
-    const clubRoles = await prisma.clubAdmin.findMany({
-      where: {
-        is_active: true,
-        deleted_at: null,
-        Clubs: {
-          ClubAdmin: {
-            some: {
-              role_tag: {
-                in: [], // handled below
-              },
-            },
-          },
-        },
-      },
-      select: {
-        role_tag: true,
-      },
-    });
-
-    /* ---------------------------------- */
-    /* 4️⃣ Merge + dedupe                 */
+    /* 3️⃣ Merge + dedupe                 */
     /* ---------------------------------- */
     const roleTags = new Set<string>();
 
     globalRoles.forEach(r => roleTags.add(r.Roles.role_tag));
     classRoles.forEach(r => roleTags.add(r.role_tag));
-    clubRoles.forEach(r => roleTags.add(r.role_tag));
 
     /* ---------------------------------- */
     /* 5️⃣ Return result                  */
