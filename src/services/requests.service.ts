@@ -85,6 +85,7 @@ export async function createRequest(payload: { body: any; user: any }): Promise<
     let approval_progress = [];
 
     const level1Def = approvalLevelsDefinition.find((l: any) => l.level === 1);
+    let toApproveData: any[] = [];
 
     if (level1Def) {
       let level1Approvers: string[] = [];
@@ -108,8 +109,17 @@ export async function createRequest(payload: { body: any; user: any }): Promise<
           comments: null
         }))
       });
+
+      // Prepare ToApprove buffer data
+      toApproveData = level1Approvers.map(uid => ({
+        req_id: requestId,
+        approverUID: uid,
+        approvalLevel: 1,
+        approvalType: (level1Def.roleIds || [level1Def.role])?.[0] || "Approver"
+      }));
     }
-    // Create SQL
+
+    // 1. Create SQL Request record FIRST (to satisfy foreign key in ToApprove)
     await prisma.requests.create({
       data: {
         req_id: requestId,
@@ -118,7 +128,16 @@ export async function createRequest(payload: { body: any; user: any }): Promise<
         status: 0,
       },
     });
-    // Create Firestore
+
+    // 2. Populate ToApprove buffer table in SQL
+    if (toApproveData.length > 0) {
+      await prisma.toApprove.createMany({
+        data: toApproveData,
+        skipDuplicates: true
+      });
+    }
+
+    // 3. Create Firestore record
     await firestore.collection("requests").doc(requestId).set({
       reqId: requestId,
       procId: procedureId,
