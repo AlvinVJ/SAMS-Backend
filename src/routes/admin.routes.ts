@@ -20,6 +20,7 @@ import {
   getUsers,
   updateUser,
   getRoles,
+  getUserTypes,
   getGlobalRequests,
   getAdminDashboardStats,
   bulkImportAcademic,
@@ -65,6 +66,7 @@ adminRouter.delete("/class/:id", deleteClass);
 adminRouter.get("/users", getUsers);
 adminRouter.put("/user/:id", updateUser);
 adminRouter.get("/roles", getRoles);
+adminRouter.get("/user-types", getUserTypes);
 
 // Global Monitoring
 adminRouter.get("/global-requests", getGlobalRequests);

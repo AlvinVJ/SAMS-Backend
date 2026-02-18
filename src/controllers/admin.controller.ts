@@ -236,6 +236,11 @@ export async function getRoles(req: Request, res: Response) {
   return res.status(result.statusCode).json(result);
 }
 
+export async function getUserTypes(req: Request, res: Response) {
+  const result = await AdminService.getUserTypesService();
+  return res.status(result.statusCode).json(result);
+}
+
 export async function getGlobalRequests(req: Request, res: Response) {
   const result = await AdminService.getGlobalRequestsService();
   return res.status(result.statusCode).json(result);
@@ -331,6 +336,7 @@ export async function bulkImportPlacementAttendance(req: Request, res: Response)
       .on("end", async () => {
         const placementService = await import("../services/placement.service.js");
         const result = await placementService.processPlacementAttendance({
+          procedureId: "PLACEMENT_BULK", // Fixed: Added procedureId
           students,
           coordinatorUid: req.user.mits_uid,
           eventName,

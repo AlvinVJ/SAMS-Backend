@@ -931,6 +931,28 @@ export async function getRolesService(): Promise<Result> {
   }
 }
 
+export async function getUserTypesService(): Promise<Result> {
+  try {
+    const userTypes = await prisma.userTypes.findMany({
+      where: { is_active: true },
+      orderBy: { user_type_id: "asc" },
+    });
+    return {
+      success: true,
+      statusCode: 200,
+      message: "User types fetched",
+      data: userTypes,
+    };
+  } catch (error) {
+    console.error("getUserTypesService error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
+}
+
 // ============================================
 // GLOBAL REQUESTS (INSTITUTIONAL OVERSIGHT)
 // ============================================
@@ -1090,21 +1112,37 @@ export async function bulkImportAcademicService(payload: {
 export async function bulkImportUsersService(payload: {
   users: any[];
 }): Promise<Result> {
-  try {
-    const results = {
-      imported: 0,
-      skipped: 0,
-      errors: [] as string[],
-    };
+  const newlyCreatedFirebaseUids: string[] = [];
+  let rowNum = 2; // Assuming header is line 1
 
+  try {
     const userTypes = await prisma.userTypes.findMany();
     const roles = await prisma.roles.findMany();
 
-    for (const data of payload.users) {
-      try {
+    await prisma.$transaction(async (tx) => {
+      for (const data of payload.users) {
         const { mits_uid, name, email, user_type_tag, ...profileData } = data;
 
-        // 1. Create User in Firebase if email provided
+        // 1. Strict Validation: Check for existing mits_uid or email in DB
+        const existingUserAccount = await tx.userAccount.findFirst({
+          where: {
+            OR: [
+              { mits_uid },
+              ...(email ? [{ email }] : [])
+            ]
+          }
+        });
+
+        if (existingUserAccount) {
+          if (existingUserAccount.mits_uid === mits_uid) {
+            throw new Error(`Error at line ${rowNum}: Duplicate MITS ID '${mits_uid}'`);
+          }
+          if (email && existingUserAccount.email === email) {
+            throw new Error(`Error at line ${rowNum}: Duplicate Email '${email}'`);
+          }
+        }
+
+        // 2. Create User in Firebase if email provided
         let auth_uid = `temp_${mits_uid}`;
         if (email) {
           try {
@@ -1114,101 +1152,96 @@ export async function bulkImportUsersService(payload: {
               displayName: name,
             });
             auth_uid = userRecord.uid;
+            newlyCreatedFirebaseUids.push(auth_uid);
           } catch (fbError: any) {
             if (fbError.code === 'auth/email-already-exists') {
               const existingUser = await firebaseAuth.getUserByEmail(email);
               auth_uid = existingUser.uid;
+              // If it already existed in Firebase but not in our DB, we don't add to newlyCreatedFirebaseUids
+              // as we shouldn't delete it if our transaction fails.
             } else {
-              throw fbError;
+              throw new Error(`Error at line ${rowNum} (Firebase): ${fbError.message}`);
             }
           }
         }
 
         const type = userTypes.find(t => t.user_type_tag === user_type_tag.toUpperCase());
-        if (!type) throw new Error(`Invalid user type: ${user_type_tag}`);
+        if (!type) throw new Error(`Error at line ${rowNum}: Invalid user type: ${user_type_tag}`);
 
-        await prisma.$transaction(async (tx) => {
-          // 2. Create UserAccount
-          await tx.userAccount.upsert({
-            where: { mits_uid },
-            update: { auth_uid, email, user_type: type.user_type_id },
-            create: { mits_uid, auth_uid, email, user_type: type.user_type_id },
-          });
-
-          // 3. Create Student/Faculty profile
-          if (type.user_type_tag === "STUDENT") {
-            await tx.student.upsert({
-              where: { mits_uid },
-              update: {
-                name,
-                batch_id: Number(profileData.batch_id),
-                class_id: Number(profileData.class_id),
-                hosteller: profileData.hosteller === 'true' || profileData.hosteller === true,
-                gender: profileData.gender,
-                phone: profileData.phone,
-              },
-              create: {
-                mits_uid,
-                name,
-                batch_id: Number(profileData.batch_id),
-                class_id: Number(profileData.class_id),
-                hosteller: profileData.hosteller === 'true' || profileData.hosteller === true,
-                gender: profileData.gender,
-                phone: profileData.phone,
-              },
-            });
-          } else if (type.user_type_tag === "FACULTY") {
-            await tx.faculty.upsert({
-              where: { mits_uid },
-              update: { name, department_id: Number(profileData.department_id), email },
-              create: { mits_uid, name, department_id: Number(profileData.department_id), email },
-            });
-          }
-
-          // 4. Handle Global Role Mapping if provided
-          if (profileData.role_tag || profileData.club_role_tag) {
-            const desiredTag = (profileData.role_tag || profileData.club_role_tag).toUpperCase();
-            const role = roles.find(r => r.role_tag === desiredTag);
-            if (role) {
-              const existingMapping = await tx.roleMapping.findFirst({
-                where: { mits_uid, role_id: role.role_id, is_active: true }
-              });
-              if (!existingMapping) {
-                const maxId = await tx.roleMapping.aggregate({ _max: { role_mapping_id: true } });
-                const nextId = (maxId._max.role_mapping_id || 0) + 1;
-                await tx.roleMapping.create({
-                  data: {
-                    role_mapping_id: nextId,
-                    role_id: role.role_id,
-                    mits_uid,
-                    is_active: true
-                  }
-                });
-              }
-            }
-          }
+        // 3. Create UserAccount
+        await tx.userAccount.create({
+          data: { mits_uid, auth_uid, email, user_type: type.user_type_id },
         });
 
-        results.imported++;
-      } catch (e: any) {
-        console.error(`Error importing user ${data.mits_uid}:`, e);
-        results.errors.push(`${data.mits_uid}: ${e.message}`);
-        results.skipped++;
+        // 4. Create Student/Faculty profile
+        if (type.user_type_tag === "STUDENT") {
+          await tx.student.create({
+            data: {
+              mits_uid,
+              name,
+              batch_id: Number(profileData.batch_id),
+              class_id: Number(profileData.class_id),
+              hosteller: profileData.hosteller === 'true' || profileData.hosteller === true,
+              gender: profileData.gender,
+              phone: profileData.phone,
+            },
+          });
+        } else if (type.user_type_tag === "FACULTY") {
+          await tx.faculty.create({
+            data: {
+              mits_uid,
+              name,
+              department_id: Number(profileData.department_id),
+              email
+            },
+          });
+        }
+
+        // 5. Handle Global Role Mapping if provided
+        if (profileData.role_tag || profileData.club_role_tag) {
+          const desiredTag = (profileData.role_tag || profileData.club_role_tag).toUpperCase();
+          const role = roles.find(r => r.role_tag === desiredTag);
+          if (role) {
+            const maxId = await tx.roleMapping.aggregate({ _max: { role_mapping_id: true } });
+            const nextId = (maxId._max.role_mapping_id || 0) + 1;
+            await tx.roleMapping.create({
+              data: {
+                role_mapping_id: nextId,
+                role_id: role.role_id,
+                mits_uid,
+                is_active: true
+              }
+            });
+          }
+        }
+        rowNum++;
+      }
+    });
+
+    return {
+      success: true,
+      statusCode: 201,
+      message: `All ${payload.users.length} users imported successfully.`,
+    };
+  } catch (error: any) {
+    console.error("bulkImportUsersService error:", error);
+
+    // Rollback Firebase users
+    if (newlyCreatedFirebaseUids.length > 0) {
+      console.log(`Rolling back ${newlyCreatedFirebaseUids.length} Firebase users...`);
+      for (const uid of newlyCreatedFirebaseUids) {
+        try {
+          await firebaseAuth.deleteUser(uid);
+        } catch (delError) {
+          console.error(`Failed to delete Firebase user ${uid} during rollback:`, delError);
+        }
       }
     }
 
     return {
-      success: true,
-      statusCode: 200,
-      message: `Import complete. ${results.imported} imported, ${results.skipped} skipped.`,
-      data: results,
-    };
-  } catch (error: any) {
-    console.error("bulkImportUsersService error:", error);
-    return {
       success: false,
-      statusCode: 500,
-      message: "Internal server error: " + error.message,
+      statusCode: 400,
+      message: error.message.startsWith("Error at line") ? error.message : `Internal server error: ${error.message}`,
     };
   }
 }

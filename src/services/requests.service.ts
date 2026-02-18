@@ -85,6 +85,7 @@ export async function createRequest(payload: { body: any; user: any }): Promise<
     let approval_progress = [];
 
     const level1Def = approvalLevelsDefinition.find((l: any) => l.level === 1);
+    let toApproveData: any[] = [];
 
     if (level1Def) {
       let level1Approvers: string[] = [];
@@ -108,8 +109,17 @@ export async function createRequest(payload: { body: any; user: any }): Promise<
           comments: null
         }))
       });
+
+      // Prepare ToApprove buffer data
+      toApproveData = level1Approvers.map(uid => ({
+        req_id: requestId,
+        approverUID: uid,
+        approvalLevel: 1,
+        approvalType: (level1Def.roleIds || [level1Def.role])?.[0] || "Approver"
+      }));
     }
-    // Create SQL
+
+    // 1. Create SQL Request record FIRST (to satisfy foreign key in ToApprove)
     await prisma.requests.create({
       data: {
         req_id: requestId,
@@ -118,7 +128,16 @@ export async function createRequest(payload: { body: any; user: any }): Promise<
         status: 0,
       },
     });
-    // Create Firestore
+
+    // 2. Populate ToApprove buffer table in SQL
+    if (toApproveData.length > 0) {
+      await prisma.toApprove.createMany({
+        data: toApproveData,
+        skipDuplicates: true
+      });
+    }
+
+    // 3. Create Firestore record
     await firestore.collection("requests").doc(requestId).set({
       reqId: requestId,
       procId: procedureId,
@@ -200,6 +219,11 @@ export async function getMyRequests(user: any): Promise<Result> {
           include: { Student: { include: { Classes: { include: { Departments: true } } } } }
         });
 
+        const lastLevel = (procData as any)?.approvalLevels?.length > 0
+          ? (procData as any).approvalLevels[(procData as any).approvalLevels.length - 1]
+          : null;
+        const lastLevelRoleTag = lastLevel?.role || lastLevel?.roleIds?.[0] || "Approver";
+
         formatted.push({
           req_id: req.req_id,
           procedure_title: req.Procedures?.title || "Unknown Request",
@@ -214,6 +238,7 @@ export async function getMyRequests(user: any): Promise<Result> {
           studentName: userData?.Student?.name || data.studentName || "Unknown",
           studentId: req.created_by,
           department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
+          lastLevelRoleTag,
         });
         console.log(`[DEBUG] Final formatted request ${req.req_id}:`, {
           status: status_text,

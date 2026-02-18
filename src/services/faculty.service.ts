@@ -59,27 +59,35 @@ export async function getRequestsToApproveService(payload: any) {
       return { success: false, statusCode: 400, message: "Role parameter is required" };
     }
 
-    const pendingRequests = await prisma.requests.findMany({
-      where: { status: 0 },
+    const approvals = await prisma.toApprove.findMany({
+      where: {
+        approverUID: normalizedFacultyUid,
+        ...(selectedRole && selectedRole !== "all" ? { approvalType: { equals: selectedRole, mode: 'insensitive' } } : {})
+      },
       include: {
-        Procedures: true,
-        UserAccount: {
+        Requests: {
           include: {
-            Student: {
+            Procedures: true,
+            UserAccount: {
               include: {
-                Classes: {
-                  include: { Departments: true }
+                Student: {
+                  include: {
+                    Classes: {
+                      include: { Departments: true }
+                    }
+                  }
                 }
               }
             }
           }
         }
-      },
+      }
     });
 
     const approvableRequests: any[] = [];
 
-    for (const req of pendingRequests) {
+    for (const app of approvals) {
+      const req = app.Requests;
       const snap = await firestore.collection("requests").doc(req.req_id).get();
       if (!snap.exists) continue;
 
@@ -88,17 +96,6 @@ export async function getRequestsToApproveService(payload: any) {
 
       const procDoc = await firestore.collection("procedures").doc(req.proc_id).get();
       const procedureDef = procDoc.exists ? procDoc.data() : null;
-      const levelDef = procedureDef?.approvalLevels?.find((l: any) => l.level === currentLevel);
-      const allowedRoles = (levelDef?.roleIds || [levelDef?.role] || []).filter(Boolean).map((r: string) => r.trim().toLowerCase());
-
-      // If filtering by a specific role (not "all"), must be in allowed roles
-      if (selectedRole !== "all" && !allowedRoles.includes(selectedRole)) continue;
-
-      // Ensure the faculty is actually an approver for this request at the current level
-      const currentLevelBlock = data.approval_progress?.find((lvl: any) => lvl.level === currentLevel);
-      const isApproverAtThisLevel = currentLevelBlock?.decisions?.some((d: any) => d.mits_uid?.trim().toLowerCase() === normalizedFacultyUid);
-
-      if (!isApproverAtThisLevel) continue;
 
       const approvalHistory: any[] = [];
       const historyBlocks = (data.approval_progress || []).filter((lvl: any) => lvl.level < currentLevel);
@@ -119,11 +116,6 @@ export async function getRequestsToApproveService(payload: any) {
         }
       }
 
-      const levelBlock = data.approval_progress?.find((lvl: any) => lvl.level === currentLevel);
-      if (!levelBlock || levelBlock.net_status !== "PENDING") continue;
-      // Skip if they already acted in THIS level
-      if (levelBlock.decisions.find((d: any) => d.mits_uid?.trim().toLowerCase() === normalizedFacultyUid && d.decision)) continue;
-
       approvableRequests.push({
         id: req.req_id,
         type: req.Procedures?.title || "Request",
@@ -133,10 +125,13 @@ export async function getRequestsToApproveService(payload: any) {
         date: req.created_at.toISOString().split("T")[0],
         description: (data.formData || data.form_response) ? Object.entries(data.formData || data.form_response).map(([k, v]) => `${k}: ${v}`).join(" | ") : "No description",
         attachments: data.attachments || [],
-        roleTag: selectedRole,
+        roleTag: app.approvalType || selectedRole,
         color: "blue",
         formData: data.formData || data.form_response || {},
-        approvalHistory: approvalHistory
+        approvalHistory: approvalHistory,
+        lastLevelRoleTag: (procedureDef as any)?.approvalLevels?.length > 0
+          ? ((procedureDef as any).approvalLevels[(procedureDef as any).approvalLevels.length - 1].role || (procedureDef as any).approvalLevels[(procedureDef as any).approvalLevels.length - 1].roleIds?.[0] || "Approver")
+          : "Approver"
       });
     }
 
@@ -159,8 +154,16 @@ export async function approveRequestService(payload: any): Promise<Result> {
     if (!snap.exists) return { success: false, statusCode: 404, message: "Request not found" };
 
     const data = snap.data()!;
-    const approvalProgress = data.approval_progress || [];
-    const currentLevel = data.current_level;
+    const approvalProgress = data.approval_progress || data.approvalProgress || [];
+    const currentLevel = data.current_level !== undefined ? data.current_level : (data.currentLevel !== undefined ? data.currentLevel : 1);
+    const procId = data.procId || data.proc_id || data.procedure_id || data.procedureId;
+    const studentId = data.studentId || data.student_id || data.studentUID;
+
+    if (!procId) {
+      console.error(`Approval failed: Request ${requestId} missing procId mapping.`);
+      return { success: false, statusCode: 500, message: "Request data corrupted: missing procedure ID" };
+    }
+
     const levelBlock = approvalProgress.find((lvl: any) => lvl.level === currentLevel);
     const myDecision = levelBlock?.decisions.find((d: any) => d.mits_uid?.trim().toLowerCase() === normalizedFacultyUid);
     if (!myDecision) return { success: false, statusCode: 403, message: "Not authorized" };
@@ -170,10 +173,27 @@ export async function approveRequestService(payload: any): Promise<Result> {
     myDecision.comments = comments || null;
     myDecision.role = role;
 
+    // 1. Remove the action item for the faculty who just approved
+    await prisma.toApprove.delete({
+      where: {
+        req_id_approverUID: {
+          req_id: requestId,
+          approverUID: normalizedFacultyUid
+        }
+      }
+    }).catch((e: any) => console.error("ToApprove delete error (likely already gone):", e));
+
     const approvalsDone = levelBlock.decisions.filter((d: any) => d.decision === "APPROVED").length;
     if (approvalsDone >= levelBlock.required_approvals) {
       levelBlock.net_status = "APPROVED";
-      const procSnap = await firestore.collection("procedures").doc(data.procId).get();
+
+      // 2. Clear remaining action items for this request at the current level (if any)
+      // This is important for cases where minApprovals < total potential approvers
+      await prisma.toApprove.deleteMany({
+        where: { req_id: requestId, approvalLevel: currentLevel }
+      });
+
+      const procSnap = await firestore.collection("procedures").doc(procId).get();
       const procedure = procSnap.data();
       const nextLevelNum = currentLevel + 1;
       const nextLevelDef = procedure?.approvalLevels?.find((l: any) => l.level === nextLevelNum);
@@ -182,7 +202,7 @@ export async function approveRequestService(payload: any): Promise<Result> {
         data.current_level = nextLevelNum;
         let nextApprovers: string[] = [];
         for (const roleTag of (nextLevelDef.roleIds || [nextLevelDef.role])) {
-          const uids = await resolveApproversForRole(roleTag, data.studentId);
+          const uids = await resolveApproversForRole(roleTag, studentId);
           nextApprovers.push(...uids);
         }
         nextApprovers = [...new Set(nextApprovers)];
@@ -192,6 +212,22 @@ export async function approveRequestService(payload: any): Promise<Result> {
           required_approvals: nextLevelDef.allMustApprove ? nextApprovers.length : (nextLevelDef.minApprovals || 1),
           decisions: nextApprovers.map(uid => ({ mits_uid: uid }))
         });
+
+        // 3. Populate ToApprove table for next level approvers
+        const nextLevelRole = (nextLevelDef.roleIds || [nextLevelDef.role])?.[0] || "Approver";
+        const toApproveData = nextApprovers.map(uid => ({
+          req_id: requestId,
+          approverUID: uid,
+          approvalLevel: nextLevelNum,
+          approvalType: nextLevelRole
+        }));
+
+        if (toApproveData.length > 0) {
+          await prisma.toApprove.createMany({
+            data: toApproveData,
+            skipDuplicates: true
+          });
+        }
       } else {
         data.status = "APPROVED";
         await prisma.requests.update({ where: { req_id: requestId }, data: { status: 1 } });
@@ -246,8 +282,8 @@ export async function rejectRequestService(payload: any): Promise<Result> {
     if (!snap.exists) return { success: false, statusCode: 404, message: "Request not found" };
 
     const data = snap.data()!;
-    const approvalProgress = data.approval_progress || [];
-    const currentLevel = data.current_level;
+    const approvalProgress = data.approval_progress || data.approvalProgress || [];
+    const currentLevel = data.current_level !== undefined ? data.current_level : (data.currentLevel !== undefined ? data.currentLevel : 1);
     const levelBlock = approvalProgress.find((lvl: any) => lvl.level === currentLevel);
     const myDecision = levelBlock?.decisions.find((d: any) => d.mits_uid?.trim().toLowerCase() === normalizedFacultyUid);
 
@@ -273,6 +309,11 @@ export async function rejectRequestService(payload: any): Promise<Result> {
     await prisma.requests.update({
       where: { req_id: requestId },
       data: { status: 2 }
+    });
+
+    // Clear ToApprove buffer entries for this request
+    await prisma.toApprove.deleteMany({
+      where: { req_id: requestId }
     });
 
     // Sync to SQL Analytics table
@@ -375,7 +416,10 @@ export async function getActedRequestsService(user: any): Promise<Result> {
           studentId: prismaReq?.created_by,
           department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
           roleTag: (procDoc.data()?.approvalLevels?.find((l: any) => l.level === data.current_level)?.role || "Approver"),
-          approvalHistory: approvalHistory
+          approvalHistory: approvalHistory,
+          lastLevelRoleTag: (procDoc.data() as any)?.approvalLevels?.length > 0
+            ? ((procDoc.data() as any).approvalLevels[(procDoc.data() as any).approvalLevels.length - 1].role || (procDoc.data() as any).approvalLevels[(procDoc.data() as any).approvalLevels.length - 1].roleIds?.[0] || "Approver")
+            : "Approver"
         });
       }
     }
