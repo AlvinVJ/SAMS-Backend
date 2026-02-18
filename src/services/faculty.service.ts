@@ -136,7 +136,10 @@ export async function getRequestsToApproveService(payload: any) {
         roleTag: selectedRole,
         color: "blue",
         formData: data.formData || data.form_response || {},
-        approvalHistory: approvalHistory
+        approvalHistory: approvalHistory,
+        lastLevelRoleTag: (procedureDef as any)?.approvalLevels?.length > 0
+          ? ((procedureDef as any).approvalLevels[(procedureDef as any).approvalLevels.length - 1].role || (procedureDef as any).approvalLevels[(procedureDef as any).approvalLevels.length - 1].roleIds?.[0] || "Approver")
+          : "Approver"
       });
     }
 
@@ -375,7 +378,10 @@ export async function getActedRequestsService(user: any): Promise<Result> {
           studentId: prismaReq?.created_by,
           department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
           roleTag: (procDoc.data()?.approvalLevels?.find((l: any) => l.level === data.current_level)?.role || "Approver"),
-          approvalHistory: approvalHistory
+          approvalHistory: approvalHistory,
+          lastLevelRoleTag: (procDoc.data() as any)?.approvalLevels?.length > 0
+            ? ((procDoc.data() as any).approvalLevels[(procDoc.data() as any).approvalLevels.length - 1].role || (procDoc.data() as any).approvalLevels[(procDoc.data() as any).approvalLevels.length - 1].roleIds?.[0] || "Approver")
+            : "Approver"
         });
       }
     }

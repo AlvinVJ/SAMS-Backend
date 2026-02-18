@@ -200,6 +200,11 @@ export async function getMyRequests(user: any): Promise<Result> {
           include: { Student: { include: { Classes: { include: { Departments: true } } } } }
         });
 
+        const lastLevel = (procData as any)?.approvalLevels?.length > 0
+          ? (procData as any).approvalLevels[(procData as any).approvalLevels.length - 1]
+          : null;
+        const lastLevelRoleTag = lastLevel?.role || lastLevel?.roleIds?.[0] || "Approver";
+
         formatted.push({
           req_id: req.req_id,
           procedure_title: req.Procedures?.title || "Unknown Request",
@@ -214,6 +219,7 @@ export async function getMyRequests(user: any): Promise<Result> {
           studentName: userData?.Student?.name || data.studentName || "Unknown",
           studentId: req.created_by,
           department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
+          lastLevelRoleTag,
         });
         console.log(`[DEBUG] Final formatted request ${req.req_id}:`, {
           status: status_text,
