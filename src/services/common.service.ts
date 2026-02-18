@@ -248,69 +248,64 @@ export async function fetch_procedures(
   payload: BasicPayload
 ): Promise<BasicResult> {
   try {
-    const { mits_uid, role } = payload.user;
-    // 1. Get primary user type
-    let user_snap = await prisma.userAccount.findFirst({
+    const { mits_uid } = payload.user;
+
+    // 1. Get user and their primary user type
+    const user = await prisma.userAccount.findFirst({
       where: { mits_uid: { equals: mits_uid, mode: 'insensitive' } },
       select: { user_type: true }
     });
 
-    if (!user_snap) {
+    if (!user) {
       return { success: false, statusCode: 403, message: "User not found" };
     }
 
-    const visibleTypes = [user_snap.user_type];
+    const visibleTypes = new Set<number>();
+    visibleTypes.add(user.user_type);
 
-    // 2. Fetch all roles assigned to this user (Global + Class-based)
+    // 2. Fetch all role tags assigned to this user
     const roleTags = new Set<string>();
 
     const globalRoles = await prisma.roleMapping.findMany({
       where: { mits_uid: { equals: mits_uid, mode: 'insensitive' }, is_active: true },
       include: { Roles: true }
     });
-    globalRoles.forEach(r => roleTags.add(r.Roles.role_tag.toUpperCase()));
+    globalRoles.forEach(r => roleTags.add(r.Roles.role_tag));
 
     const classRoles = await prisma.classFaculty.findMany({
       where: { mits_uid: { equals: mits_uid, mode: 'insensitive' }, is_active: true },
       select: { role_tag: true }
     });
-    classRoles.forEach(r => roleTags.add(r.role_tag.toUpperCase()));
+    classRoles.forEach(r => roleTags.add(r.role_tag));
 
-    // 3. Map specific roles to virtual user types for visibility
+    // 3. Dynamic Mapping: Match role tags to UserTypes
+    const userTypes = await prisma.userTypes.findMany({ where: { is_active: true } });
     const normalize = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '');
 
-    roleTags.forEach(tag => {
-      const norm = normalize(tag);
-      if (norm === 'CLUBLEAD') visibleTypes.push(3);
-      if (norm === 'PLACEMENTCOORDINATOR' || norm === 'PLACEMENTCOORD') {
-        if (!visibleTypes.includes(4)) visibleTypes.push(4);
+    const normRoleTags = Array.from(roleTags).map(t => normalize(t));
+
+    userTypes.forEach(ut => {
+      if (normRoleTags.includes(normalize(ut.user_type_tag))) {
+        visibleTypes.add(ut.user_type_id);
       }
     });
 
-    // 4. Fetch procedures visible to any of these types
-    let allActiveProcs = await prisma.procedures.findMany({
-      where: { is_active: true },
-      include: { ProcedureVisibility: true }
-    });
-
-    // AUTO-REPAIR: If any active procedure has NO visibility, fix it now (one-time safety)
-    const proceduresToRepair = allActiveProcs.filter(p => p.ProcedureVisibility.length === 0);
-    if (proceduresToRepair.length > 0) {
-      for (const p of proceduresToRepair) {
-        const fallbackTypes = p.title.includes("Placement") ? [4, 1] : [1];
-        await prisma.procedureVisibility.createMany({
-          data: fallbackTypes.map(t => ({ proc_id: p.proc_id, user_type: t }))
-        });
+    // 4. Fetch procedures with visibility records
+    const procedures = await prisma.procedures.findMany({
+      where: {
+        is_active: true,
+        ProcedureVisibility: {
+          some: {
+            user_type: { in: Array.from(visibleTypes) }
+          }
+        }
+      },
+      select: {
+        proc_id: true,
+        title: true,
+        desc_first_50_char: true
       }
-      allActiveProcs = await prisma.procedures.findMany({
-        where: { is_active: true },
-        include: { ProcedureVisibility: true }
-      });
-    }
-
-    const procedures = allActiveProcs.filter(p =>
-      p.ProcedureVisibility.some(v => visibleTypes.includes(v.user_type))
-    );
+    });
 
     return {
       success: true,
@@ -350,26 +345,50 @@ export async function create_request(
       };
     }
 
-    const user = await prisma.userAccount.findFirst({
+    // 1. Resolve user and their roles
+    const user_snap = await prisma.userAccount.findFirst({
       where: { mits_uid: { equals: mits_uid, mode: 'insensitive' } },
       select: { user_type: true },
     });
 
-    if (!user) {
-      return {
-        success: false,
-        statusCode: 403,
-        message: "User not registered",
-      };
+    if (!user_snap) {
+      return { success: false, statusCode: 403, message: "User not registered" };
     }
 
+    const visibleTypes = new Set<number>();
+    visibleTypes.add(user_snap.user_type);
+
+    const roleTags = new Set<string>();
+    const globalRoles = await prisma.roleMapping.findMany({
+      where: { mits_uid: { equals: mits_uid, mode: 'insensitive' }, is_active: true },
+      include: { Roles: true }
+    });
+    globalRoles.forEach(r => roleTags.add(r.Roles.role_tag));
+
+    const classRoles = await prisma.classFaculty.findMany({
+      where: { mits_uid: { equals: mits_uid, mode: 'insensitive' }, is_active: true },
+      select: { role_tag: true }
+    });
+    classRoles.forEach(r => roleTags.add(r.role_tag));
+
+    const userTypes = await prisma.userTypes.findMany({ where: { is_active: true } });
+    const normalize = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const normRoleTags = Array.from(roleTags).map(t => normalize(t));
+
+    userTypes.forEach(ut => {
+      if (normRoleTags.includes(normalize(ut.user_type_tag))) {
+        visibleTypes.add(ut.user_type_id);
+      }
+    });
+
+    // 2. Check procedure accessibility
     const procedure = await prisma.procedures.findFirst({
       where: {
         proc_id: procedureId,
         is_active: true,
         ProcedureVisibility: {
           some: {
-            user_type: user.user_type,
+            user_type: { in: Array.from(visibleTypes) },
           },
         },
       },

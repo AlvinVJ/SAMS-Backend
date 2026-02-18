@@ -931,6 +931,28 @@ export async function getRolesService(): Promise<Result> {
   }
 }
 
+export async function getUserTypesService(): Promise<Result> {
+  try {
+    const userTypes = await prisma.userTypes.findMany({
+      where: { is_active: true },
+      orderBy: { user_type_id: "asc" },
+    });
+    return {
+      success: true,
+      statusCode: 200,
+      message: "User types fetched",
+      data: userTypes,
+    };
+  } catch (error) {
+    console.error("getUserTypesService error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
+}
+
 // ============================================
 // GLOBAL REQUESTS (INSTITUTIONAL OVERSIGHT)
 // ============================================
