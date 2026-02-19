@@ -545,11 +545,10 @@ export async function getDepartments(): Promise<Result> {
   }
 }
 
-export async function createDepartment(payload: { dept_id: number, dept_name: string }): Promise<Result> {
+export async function createDepartment(payload: { dept_id?: number, dept_name: string }): Promise<Result> {
   try {
     const department = await prisma.departments.create({
       data: {
-        dept_id: payload.dept_id,
         dept_name: payload.dept_name,
         is_active: true
       }
@@ -607,11 +606,10 @@ export async function getBatches(): Promise<Result> {
   }
 }
 
-export async function createBatch(payload: { batch_id: number, batch: string }): Promise<Result> {
+export async function createBatch(payload: { batch_id?: number, batch: string }): Promise<Result> {
   try {
     const batch = await prisma.batches.create({
       data: {
-        batch_id: payload.batch_id,
         batch: payload.batch,
         is_active: true
       }
@@ -674,7 +672,7 @@ export async function getClasses(): Promise<Result> {
 }
 
 export async function createClass(payload: {
-  class_id: number,
+  class_id?: number,
   batch_id: number,
   class: string,
   dept_id: number
@@ -923,6 +921,50 @@ export async function getRolesService(): Promise<Result> {
     };
   } catch (error) {
     console.error("getRolesService error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
+}
+
+export async function createRoleService(payload: {
+  role_id?: number;
+  role_tag: string;
+  role_desc: string;
+}): Promise<Result> {
+  try {
+    const { role_id, role_tag, role_desc } = payload;
+
+    const existing = await prisma.roles.findUnique({
+      where: { role_tag: role_tag.toUpperCase() },
+    });
+
+    if (existing) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "Role tag already exists",
+      };
+    }
+
+    await prisma.roles.create({
+      data: {
+        //role_id ,
+        role_tag: role_tag.toUpperCase(),
+        role_desc,
+        is_active: true,
+      },
+    });
+
+    return {
+      success: true,
+      statusCode: 201,
+      message: "Role created successfully",
+    };
+  } catch (error) {
+    console.error("createRoleService error:", error);
     return {
       success: false,
       statusCode: 500,

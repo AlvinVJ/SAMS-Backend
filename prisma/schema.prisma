@@ -20,7 +20,7 @@ model Analytics {
 }
 
 model Batches {
-  batch_id   Int       @id
+  batch_id   Int       @id @default(autoincrement())
   batch      String
   is_active  Boolean   @default(true)
   deleted_at DateTime?
@@ -31,7 +31,7 @@ model Batches {
 }
 
 model Classes {
-  class_id     Int            @id
+  class_id     Int            @id @default(autoincrement())
   batch_id     Int
   class        String
   dept_id      Int
@@ -87,7 +87,7 @@ model Clubs {
 }
 
 model Departments {
-  dept_id           Int                 @id
+  dept_id           Int                 @id @default(autoincrement())
   dept_name         String
   is_active         Boolean             @default(true)
   deleted_at        DateTime?
@@ -165,7 +165,7 @@ model RoleMapping {
 }
 
 model Roles {
-  role_id           Int                 @id
+  role_id           Int                 @id @default(autoincrement())
   role_tag          String              @unique
   role_desc         String?
   is_active         Boolean             @default(true)
