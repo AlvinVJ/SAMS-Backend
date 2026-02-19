@@ -198,7 +198,8 @@ export async function deleteBatch(req: Request, res: Response) {
 // ============================================
 
 export async function getClasses(req: Request, res: Response) {
-  const result = await AdminService.getClasses();
+  const { batch_id } = req.query;
+  const result = await AdminService.getClasses(batch_id ? Number(batch_id) : undefined);
   return res.status(result.statusCode).json(result);
 }
 
@@ -238,6 +239,16 @@ export async function getRoles(req: Request, res: Response) {
 
 export async function createRole(req: Request, res: Response) {
   const result = await AdminService.createRoleService(req.body);
+  return res.status(result.statusCode).json(result);
+}
+
+export async function updateRole(req: Request, res: Response) {
+  const result = await AdminService.updateRoleService(req.body);
+  return res.status(result.statusCode).json(result);
+}
+
+export async function deleteRole(req: Request, res: Response) {
+  const result = await AdminService.deleteRoleService(Number(req.params.id));
   return res.status(result.statusCode).json(result);
 }
 
@@ -371,5 +382,28 @@ export async function removeDepartmentRole(req: Request, res: Response) {
     return res.status(400).json({ success: false, message: "mits_uid is required" });
   }
   const result = await AdminService.removeDepartmentRole({ mits_uid });
+  return res.status(result.statusCode).json(result);
+}
+
+export async function getClassFacultyRoles(req: Request, res: Response) {
+  const result = await AdminService.getClassFacultyRoles(Number(req.params.id));
+  return res.status(result.statusCode).json(result);
+}
+
+export async function assignClassRole(req: Request, res: Response) {
+  const result = await AdminService.assignClassRole(req.body);
+  return res.status(result.statusCode).json(result);
+}
+
+export async function removeClassRole(req: Request, res: Response) {
+  const { class_id, mits_uid, role_tag } = req.params;
+  if (!class_id || !mits_uid || !role_tag) {
+    return res.status(400).json({ success: false, message: "class_id, mits_uid, and role_tag are required" });
+  }
+  const result = await AdminService.removeClassRole({
+    class_id: Number(class_id),
+    mits_uid,
+    role_tag
+  });
   return res.status(result.statusCode).json(result);
 }

@@ -654,13 +654,24 @@ export async function deleteBatch(batch_id: number): Promise<Result> {
 // CLASSES CRUD
 // ============================================
 
-export async function getClasses(): Promise<Result> {
+export async function getClasses(batchId?: number): Promise<Result> {
   try {
+    const whereClause: any = { deleted_at: null };
+    if (batchId) {
+      whereClause.batch_id = batchId;
+    }
     const classes = await prisma.classes.findMany({
-      where: { deleted_at: null },
+      where: whereClause,
       include: {
         Departments: true,
-        Batches: true
+        Batches: true,
+        ClassFaculty: {
+          where: { is_active: true },
+          include: {
+            Faculty: true,
+            Roles: true
+          }
+        }
       },
       orderBy: { class: 'asc' }
     });
@@ -678,14 +689,17 @@ export async function createClass(payload: {
   dept_id: number
 }): Promise<Result> {
   try {
+    const data: any = {
+      batch_id: payload.batch_id,
+      class: payload.class,
+      dept_id: payload.dept_id,
+      is_active: true
+    };
+    if (payload.class_id) {
+      data.class_id = payload.class_id;
+    }
     const newClass = await prisma.classes.create({
-      data: {
-        class_id: payload.class_id,
-        batch_id: payload.batch_id,
-        class: payload.class,
-        dept_id: payload.dept_id,
-        is_active: true
-      }
+      data: data
     });
     return { success: true, statusCode: 201, message: "Class created", data: newClass };
   } catch (error) {
@@ -970,6 +984,42 @@ export async function createRoleService(payload: {
       statusCode: 500,
       message: "Internal server error",
     };
+  }
+}
+
+export async function updateRoleService(payload: {
+  role_id: number;
+  role_tag: string;
+  role_desc: string;
+  is_active: boolean;
+}): Promise<Result> {
+  try {
+    const { role_id, role_tag, role_desc, is_active } = payload;
+    const role = await prisma.roles.update({
+      where: { role_id },
+      data: {
+        role_tag: role_tag.toUpperCase(),
+        role_desc,
+        is_active,
+      },
+    });
+    return { success: true, statusCode: 200, message: "Role updated", data: role };
+  } catch (error) {
+    console.error("updateRoleService error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function deleteRoleService(role_id: number): Promise<Result> {
+  try {
+    await prisma.roles.update({
+      where: { role_id },
+      data: { is_active: false, deleted_at: new Date() },
+    });
+    return { success: true, statusCode: 200, message: "Role deleted" };
+  } catch (error) {
+    console.error("deleteRoleService error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
   }
 }
 
@@ -1475,6 +1525,118 @@ export async function removeDepartmentRole(payload: {
     return { success: true, statusCode: 200, message: "Role removed successfully" };
   } catch (error) {
     console.error("removeDepartmentRole error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+// ============================================
+// CLASS FACULTY MANAGEMENT
+// ============================================
+
+export async function getClassFacultyRoles(classId: number): Promise<Result> {
+  try {
+    const roles = await prisma.classFaculty.findMany({
+      where: {
+        class_id: classId,
+        is_active: true
+      },
+      include: {
+        Faculty: true,
+        Roles: true
+      }
+    });
+    return { success: true, statusCode: 200, message: "Class faculty roles fetched", data: roles };
+  } catch (error) {
+    console.error("getClassFacultyRoles error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function assignClassRole(payload: {
+  class_id: number,
+  mits_uid: string,
+  role_tag: string
+}): Promise<Result> {
+  try {
+    const { class_id, mits_uid, role_tag } = payload;
+
+    // 1. Find role_id (case-insensitive) - although we use role_tag in ClassFaculty table directly
+    // The schema says ClassFaculty links to Roles via role_tag.
+    let role = await prisma.roles.findFirst({
+      where: {
+        role_tag: { equals: role_tag, mode: 'insensitive' }
+      }
+    });
+
+    if (!role) {
+      if (role_tag.toUpperCase() === 'CLASS_ADVISOR') {
+        role = await prisma.roles.create({
+          data: {
+            role_tag: 'CLASS_ADVISOR',
+            role_desc: 'Class Advisor',
+            is_active: true
+          }
+        });
+      } else {
+        return { success: false, statusCode: 404, message: `Role ${role_tag} not found` };
+      }
+    }
+
+    // Since ClassFaculty has a composite primary key [class_id, mits_uid, role_tag], 
+    // and we want to allow "re-assignment" (e.g. if someone was deleted before), we use upsert.
+    // However, the rule is typically "2 advisors". We might want to allow multiple under same tag?
+    // User said "2 class advisors". This usually means index 1 and index 2 or just two entries with 'CLASS_ADVISOR' tag.
+    // If it's just 'CLASS_ADVISOR' tag, then they are distinct by mits_uid.
+
+    await prisma.classFaculty.upsert({
+      where: {
+        class_id_mits_uid_role_tag: {
+          class_id,
+          mits_uid,
+          role_tag: role.role_tag
+        }
+      },
+      create: {
+        class_id,
+        mits_uid,
+        role_tag: role.role_tag,
+        is_active: true
+      },
+      update: {
+        is_active: true,
+        deleted_at: null
+      }
+    });
+
+    return { success: true, statusCode: 200, message: "Class advisor assigned successfully" };
+  } catch (error) {
+    console.error("assignClassRole error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function removeClassRole(payload: {
+  class_id: number,
+  mits_uid: string,
+  role_tag: string
+}): Promise<Result> {
+  try {
+    await prisma.classFaculty.update({
+      where: {
+        class_id_mits_uid_role_tag: {
+          class_id: payload.class_id,
+          mits_uid: payload.mits_uid,
+          role_tag: payload.role_tag
+        }
+      },
+      data: {
+        is_active: false,
+        deleted_at: new Date()
+      }
+    });
+    return { success: true, statusCode: 200, message: "Class role removed successfully" };
+  } catch (error) {
+    console.error("removeClassRole error:", error);
     return { success: false, statusCode: 500, message: "Internal server error" };
   }
 }
