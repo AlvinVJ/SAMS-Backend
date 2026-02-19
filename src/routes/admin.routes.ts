@@ -25,7 +25,11 @@ import {
   getAdminDashboardStats,
   bulkImportAcademic,
   bulkImportUsers,
-  bulkImportPlacementAttendance
+  bulkImportPlacementAttendance,
+  getDepartmentFacultyRoles,
+  assignDepartmentRole,
+  removeDepartmentRole,
+  createRole
 } from "../controllers/admin.controller.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { requireAuth } from "../middleware/requireAuth.js";
@@ -66,6 +70,7 @@ adminRouter.delete("/class/:id", deleteClass);
 adminRouter.get("/users", getUsers);
 adminRouter.put("/user/:id", updateUser);
 adminRouter.get("/roles", getRoles);
+adminRouter.post("/role", createRole);
 adminRouter.get("/user-types", getUserTypes);
 
 // Global Monitoring
@@ -75,3 +80,8 @@ adminRouter.get("/dashboard-stats", getAdminDashboardStats);
 // Bulk Import
 adminRouter.post("/bulk-import-academic", upload.single("file"), bulkImportAcademic);
 adminRouter.post("/bulk-import-users", upload.single("file"), bulkImportUsers);
+
+// Department Faculty
+adminRouter.get("/department/:id/faculty-roles", getDepartmentFacultyRoles);
+adminRouter.post("/department/assign-role", assignDepartmentRole);
+adminRouter.delete("/department/faculty/:mits_uid", removeDepartmentRole);

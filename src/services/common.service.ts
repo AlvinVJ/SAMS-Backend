@@ -8,19 +8,24 @@ async function resolveApproversForRole(
   roleTag: string,
   requesterUid: string
 ): Promise<string[]> {
-  console.log(roleTag, requesterUid);
-  if (roleTag === "class_advisor") {
+  console.log(`Resolving approvers for role: ${roleTag}, requester: ${requesterUid}`);
+  const normalizedTag = roleTag.toLowerCase().trim();
+
+  // -------------------------------------------------------------
+  // 1. CLASS ADVISOR (Class-based role)
+  // -------------------------------------------------------------
+  if (normalizedTag === "class_advisor") {
     const student = await prisma.student.findUnique({
       where: { mits_uid: requesterUid },
       select: { class_id: true },
     });
 
-    if (!student) return [];
+    if (!student || !student.class_id) return [];
 
     const advisors = await prisma.classFaculty.findMany({
       where: {
         class_id: student.class_id,
-        role_tag: "class_advisor",
+        role_tag: { equals: "class_advisor", mode: 'insensitive' }, // Case-insensitive fix
         is_active: true,
         deleted_at: null,
       },
@@ -30,8 +35,60 @@ async function resolveApproversForRole(
     return advisors.map(a => a.mits_uid);
   }
 
-  const role = await prisma.roles.findUnique({
-    where: { role_tag: roleTag },
+  // -------------------------------------------------------------
+  // 2. HOD / ASSISTANT HOD (Department-based Role)
+  // -------------------------------------------------------------
+  if (normalizedTag === "hod" || normalizedTag === "assistant_hod") {
+    // A. FIND REQUESTER'S DEPARTMENT
+    let deptId: number | null = null;
+
+    // Check if student
+    const student = await prisma.student.findUnique({
+      where: { mits_uid: requesterUid },
+      include: { Classes: true }
+    });
+
+    if (student && student.Classes) {
+      deptId = student.Classes.dept_id;
+    } else {
+      // Check if faculty
+      const faculty = await prisma.faculty.findUnique({
+        where: { mits_uid: requesterUid },
+        select: { department_id: true }
+      });
+      if (faculty) {
+        deptId = faculty.department_id;
+      }
+    }
+
+    if (!deptId) {
+      console.warn(`Could not determine department for requester ${requesterUid}, cannot resolve ${roleTag}`);
+      return [];
+    }
+
+    // B. FIND USERS IN THIS DEPARTMENT WITH THIS ROLE IN DepartmentFaculty table
+    const approvers = await prisma.departmentFaculty.findMany({
+      where: {
+        dept_id: deptId,
+        is_active: true,
+        deleted_at: null,
+        Roles: {
+          role_tag: normalizedTag === 'assistant_hod'
+            ? { in: ['ASSISTANT_HOD', 'ASST_HOD'], mode: 'insensitive' }
+            : { equals: normalizedTag, mode: 'insensitive' }
+        }
+      },
+      select: { mits_uid: true }
+    });
+
+    return approvers.map(a => a.mits_uid);
+  }
+
+  // -------------------------------------------------------------
+  // 3. GENERIC GLOBAL ROLES (Principal, etc.)
+  // -------------------------------------------------------------
+  const role = await prisma.roles.findFirst({
+    where: { role_tag: { equals: normalizedTag, mode: 'insensitive' } },
     select: { role_id: true },
   });
 
@@ -69,16 +126,17 @@ async function buildInitialApprovalProgress(
   const approvalLevels = procedure?.approvalLevels ?? [];
 
   if (approvalLevels.length === 0) {
-    return []; // no approval workflow
+    return { approval_progress: [], initialApprovers: [], initialRole: null };
   }
 
   const firstLevel = approvalLevels[0];
   let approvers: string[] = [];
 
   /* 2️⃣ Resolve approvers from roles */
-  for (const roleTag of firstLevel.roleIds ?? []) {
+  // Handle both roleIds (array) and role (single string)
+  const roleTags = firstLevel.roleIds ?? (firstLevel.role ? [firstLevel.role] : []);
+  for (const roleTag of roleTags) {
     const users = await resolveApproversForRole(roleTag, requesterUid);
-    console.log(users);
     approvers.push(...users);
   }
 
@@ -89,17 +147,23 @@ async function buildInitialApprovalProgress(
     mits_uid: uid,
   }));
 
-  /* 4️⃣ Return approval_progress array */
-  return [
-    {
-      level: 1,
-      net_status: "PENDING",
-      required_approvals: firstLevel.allMustApprove
-        ? approvers.length
-        : firstLevel.minApprovals,
-      decisions,
-    },
-  ];
+  const initialRole = roleTags[0] || "Approver";
+
+  /* 4️⃣ Return approval_progress array and metadata */
+  return {
+    approval_progress: [
+      {
+        level: 1,
+        net_status: "PENDING",
+        required_approvals: firstLevel.allMustApprove
+          ? approvers.length
+          : firstLevel.minApprovals,
+        decisions,
+      },
+    ],
+    initialApprovers: approvers,
+    initialRole
+  };
 }
 
 
@@ -424,7 +488,7 @@ export async function create_request(
     }
 
     const now = admin.firestore.FieldValue.serverTimestamp();
-    const approval_progress = await buildInitialApprovalProgress(
+    const { approval_progress, initialApprovers, initialRole } = await buildInitialApprovalProgress(
       procedureId,
       mits_uid
     );
@@ -449,7 +513,7 @@ export async function create_request(
 
       formData,
 
-      approval_progress, // initialized empty; filled later
+      approval_progress,
     };
 
     const reqRef = await admin
@@ -459,6 +523,7 @@ export async function create_request(
 
     const req_id = reqRef.id; // 🔑 Firestore doc id
 
+    // 3. Create SQL Request record
     await prisma.requests.create({
       data: {
         req_id,
@@ -467,6 +532,39 @@ export async function create_request(
         status: 0, // PENDING
       },
     });
+
+    // 4. Populate ToApprove table for initial level approvers
+    if (initialApprovers.length > 0) {
+      await prisma.toApprove.createMany({
+        data: initialApprovers.map(uid => ({
+          req_id: req_id,
+          approverUID: uid,
+          approvalLevel: 1,
+          approvalType: initialRole || "Approver"
+        })),
+        skipDuplicates: true
+      });
+
+      // 5. Update Analytics pending count
+      try {
+        if (initialRole) {
+          const roleRow = await prisma.roles.findFirst({
+            where: { role_tag: { equals: initialRole, mode: 'insensitive' } }
+          });
+          if (roleRow) {
+            for (const approverUid of initialApprovers) {
+              await prisma.analytics.upsert({
+                where: { mits_uid_role_id: { mits_uid: approverUid, role_id: roleRow.role_id } },
+                create: { mits_uid: approverUid, role_id: roleRow.role_id, pending: 1, approved: 0, rejected: 0 },
+                update: { pending: { increment: 1 } }
+              });
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Analytics pending update failed:", e);
+      }
+    }
 
 
     return {
