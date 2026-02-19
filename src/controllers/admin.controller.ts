@@ -350,3 +350,17 @@ export async function bulkImportPlacementAttendance(req: Request, res: Response)
     return res.status(500).json({ success: false, message: "Internal server error" });
   }
 }
+export async function getDepartmentFacultyRoles(req: Request, res: Response) {
+  const result = await AdminService.getDepartmentFacultyRoles(Number(req.params.id));
+  return res.status(result.statusCode).json(result);
+}
+
+export async function assignDepartmentRole(req: Request, res: Response) {
+  const result = await AdminService.assignDepartmentRole(req.body);
+  return res.status(result.statusCode).json(result);
+}
+
+export async function removeDepartmentRole(req: Request, res: Response) {
+  const result = await AdminService.removeDepartmentRole({ mits_uid: req.params.mits_uid });
+  return res.status(result.statusCode).json(result);
+}

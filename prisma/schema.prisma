@@ -87,28 +87,30 @@ model Clubs {
 }
 
 model Departments {
-  dept_id    Int       @id
-  dept_name  String
-  is_active  Boolean   @default(true)
-  deleted_at DateTime?
-  Classes    Classes[]
-  Clubs      Clubs[]
-  Faculty    Faculty[]
+  dept_id           Int                 @id
+  dept_name         String
+  is_active         Boolean             @default(true)
+  deleted_at        DateTime?
+  Classes           Classes[]
+  Clubs             Clubs[]
+  DepartmentFaculty DepartmentFaculty[]
+  Faculty           Faculty[]
 
   @@index([is_active])
 }
 
 model Faculty {
-  mits_uid      String         @id
-  name          String
-  department_id Int
-  email         String?        @unique
-  is_active     Boolean        @default(true)
-  deleted_at    DateTime?
-  Analytics     Analytics[]
-  ClassFaculty  ClassFaculty[]
-  Departments   Departments    @relation(fields: [department_id], references: [dept_id])
-  UserAccount   UserAccount    @relation(fields: [mits_uid], references: [mits_uid])
+  mits_uid          String             @id
+  name              String
+  department_id     Int
+  email             String?            @unique
+  is_active         Boolean            @default(true)
+  deleted_at        DateTime?
+  Analytics         Analytics[]
+  ClassFaculty      ClassFaculty[]
+  DepartmentFaculty DepartmentFaculty?
+  Departments       Departments        @relation(fields: [department_id], references: [dept_id])
+  UserAccount       UserAccount        @relation(fields: [mits_uid], references: [mits_uid])
 
   @@index([is_active])
   @@index([department_id])
@@ -163,16 +165,17 @@ model RoleMapping {
 }
 
 model Roles {
-  role_id      Int            @id
-  role_tag     String         @unique
-  role_desc    String?
-  is_active    Boolean        @default(true)
-  deleted_at   DateTime?
-  Analytics    Analytics[]
-  ClassFaculty ClassFaculty[]
-  ClubAdmin    ClubAdmin[]
-  Clubs        Clubs[]
-  RoleMapping  RoleMapping[]
+  role_id           Int                 @id
+  role_tag          String              @unique
+  role_desc         String?
+  is_active         Boolean             @default(true)
+  deleted_at        DateTime?
+  Analytics         Analytics[]
+  ClassFaculty      ClassFaculty[]
+  ClubAdmin         ClubAdmin[]
+  Clubs             Clubs[]
+  DepartmentFaculty DepartmentFaculty[]
+  RoleMapping       RoleMapping[]
 
   @@index([is_active])
 }
@@ -211,6 +214,7 @@ model UserAccount {
 
   @@index([is_active])
   @@index([user_type])
+  @@index([auth_uid])
 }
 
 model UserTypes {
@@ -231,4 +235,16 @@ model ToApprove {
   Requests      Requests    @relation(fields: [req_id], references: [req_id], onDelete: NoAction, onUpdate: NoAction)
 
   @@id([req_id, approverUID])
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model DepartmentFaculty {
+  mits_uid    String      @id
+  dept_id     Int
+  role_id     Int?
+  is_active   Boolean?
+  deleted_at  DateTime?   @db.Timestamp(6)
+  Departments Departments @relation(fields: [dept_id], references: [dept_id], onDelete: NoAction, onUpdate: NoAction)
+  Faculty     Faculty     @relation(fields: [mits_uid], references: [mits_uid], onDelete: NoAction, onUpdate: NoAction)
+  Roles       Roles?      @relation(fields: [role_id], references: [role_id], onDelete: NoAction, onUpdate: NoAction)
 }

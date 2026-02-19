@@ -36,7 +36,7 @@ async function resolveApproversForRole(
   }
 
   // -------------------------------------------------------------
-  // 2. HOD / ASSISTANT HOD (Department-based + Global Role)
+  // 2. HOD / ASSISTANT HOD (Department-based Role)
   // -------------------------------------------------------------
   if (normalizedTag === "hod" || normalizedTag === "assistant_hod") {
     // A. FIND REQUESTER'S DEPARTMENT
@@ -66,36 +66,22 @@ async function resolveApproversForRole(
       return [];
     }
 
-    // B. FIND USERS WITH THIS GLOBAL ROLE
-    const role = await prisma.roles.findFirst({
-      where: { role_tag: { equals: normalizedTag, mode: 'insensitive' } },
-      select: { role_id: true },
-    });
-
-    if (!role) return [];
-
-    const potentialApprovers = await prisma.roleMapping.findMany({
+    // B. FIND USERS IN THIS DEPARTMENT WITH THIS ROLE IN DepartmentFaculty table
+    const approvers = await prisma.departmentFaculty.findMany({
       where: {
-        role_id: role.role_id,
+        dept_id: deptId,
         is_active: true,
         deleted_at: null,
-      },
-      include: {
-        UserAccount: {
-          include: {
-            Faculty: true // We need this to check THEIR department
-          }
+        Roles: {
+          role_tag: normalizedTag === 'assistant_hod'
+            ? { in: ['ASSISTANT_HOD', 'ASST_HOD'], mode: 'insensitive' }
+            : { equals: normalizedTag, mode: 'insensitive' }
         }
-      }
+      },
+      select: { mits_uid: true }
     });
 
-    // C. FILTER BY SAME DEPARTMENT
-    // The approver must belong to the SAME department as the requester
-    const departmentApprovers = potentialApprovers.filter(mapping => {
-      return mapping.UserAccount?.Faculty?.department_id === deptId;
-    });
-
-    return departmentApprovers.map(m => m.mits_uid);
+    return approvers.map(a => a.mits_uid);
   }
 
   // -------------------------------------------------------------

@@ -1328,3 +1328,111 @@ export async function getAdminDashboardStatsService(): Promise<Result> {
     };
   }
 }
+// ============================================
+// DEPARTMENT FACULTY (HOD / ASST. HOD)
+// ============================================
+
+export async function getDepartmentFacultyRoles(dept_id: number): Promise<Result> {
+  try {
+    const roles = await prisma.departmentFaculty.findMany({
+      where: {
+        dept_id: dept_id,
+        is_active: true,
+        deleted_at: null
+      },
+      include: {
+        Faculty: true,
+        Roles: true
+      }
+    });
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Department faculty roles fetched",
+      data: roles
+    };
+  } catch (error) {
+    console.error("getDepartmentFacultyRoles error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function assignDepartmentRole(payload: {
+  dept_id: number,
+  mits_uid: string,
+  role_tag: string
+}): Promise<Result> {
+  try {
+    const { dept_id, mits_uid, role_tag } = payload;
+
+    // 1. Find the role_id for the tag (case-insensitive)
+    const role = await prisma.roles.findFirst({
+      where: {
+        role_tag: { equals: role_tag, mode: 'insensitive' }
+      }
+    });
+
+    if (!role) {
+      return { success: false, statusCode: 404, message: `Role ${role_tag} not found` };
+    }
+
+    // 2. REPLACEMENT LOGIC: Deactivate anyone else in THIS department holding THIS role
+    // This allows "Edit/Replace" by simply assigning a new person
+    await prisma.departmentFaculty.updateMany({
+      where: {
+        dept_id: dept_id,
+        role_id: role.role_id,
+        is_active: true
+      },
+      data: {
+        is_active: false,
+        deleted_at: new Date()
+      }
+    });
+
+    // 3. Upsert the department faculty record for the new person
+    await prisma.departmentFaculty.upsert({
+      where: { mits_uid: mits_uid },
+      create: {
+        mits_uid: mits_uid,
+        dept_id: dept_id,
+        role_id: role.role_id,
+        is_active: true
+      },
+      update: {
+        dept_id: dept_id,
+        role_id: role.role_id,
+        is_active: true,
+        deleted_at: null
+      }
+    });
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Department role assigned successfully"
+    };
+  } catch (error) {
+    console.error("assignDepartmentRole error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function removeDepartmentRole(payload: {
+  mits_uid: string
+}): Promise<Result> {
+  try {
+    await prisma.departmentFaculty.update({
+      where: { mits_uid: payload.mits_uid },
+      data: {
+        is_active: false,
+        deleted_at: new Date()
+      }
+    });
+    return { success: true, statusCode: 200, message: "Role removed successfully" };
+  } catch (error) {
+    console.error("removeDepartmentRole error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
