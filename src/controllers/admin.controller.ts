@@ -231,6 +231,11 @@ export async function updateUser(req: Request, res: Response) {
   return res.status(result.statusCode).json(result);
 }
 
+export async function createUser(req: Request, res: Response) {
+  const result = await AdminService.createUserService(req.body);
+  return res.status(result.statusCode).json(result);
+}
+
 export async function getRoles(req: Request, res: Response) {
   const result = await AdminService.getRolesService();
   return res.status(result.statusCode).json(result);

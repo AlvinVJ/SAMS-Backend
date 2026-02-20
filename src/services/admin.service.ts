@@ -806,10 +806,10 @@ export async function updateUserService(payload: {
   name?: string;
   email?: string;
   is_active?: boolean;
-  role_id?: number;
+  role_ids?: number[]; // Updated to accept multiple role IDs
 }): Promise<Result> {
   try {
-    const { mits_uid, name, email, is_active, role_id } = payload;
+    const { mits_uid, name, email, is_active, role_ids } = payload;
 
     const user = await prisma.userAccount.findUnique({
       where: { mits_uid },
@@ -852,42 +852,41 @@ export async function updateUserService(payload: {
         });
       }
 
-      // 3. Update RoleMapping
-      if (role_id !== undefined) {
-        const existingMapping = await tx.roleMapping.findFirst({
+      // 3. Update RoleMapping (Sync logic)
+      if (role_ids !== undefined) {
+        // Fetch current active roles
+        const currentMappings = await tx.roleMapping.findMany({
           where: { mits_uid, is_active: true },
         });
+        const currentRoleIds = currentMappings.map(m => m.role_id);
 
-        if (role_id === null) {
-          // If role_id is explicitly null, deactivate any active mapping
-          if (existingMapping) {
-            await tx.roleMapping.update({
-              where: { role_mapping_id: existingMapping.role_mapping_id },
-              data: { is_active: false },
-            });
-          }
-        } else {
-          // Update existing or create new mapping
-          if (existingMapping) {
-            await tx.roleMapping.update({
-              where: { role_mapping_id: existingMapping.role_mapping_id },
-              data: { role_id },
-            });
-          } else {
-            const maxId = await tx.roleMapping.aggregate({
-              _max: { role_mapping_id: true },
-            });
-            const newId = (maxId._max.role_mapping_id || 0) + 1;
+        // Roles to deactivate
+        const toDeactivate = currentMappings.filter(m => !role_ids.includes(m.role_id));
+        if (toDeactivate.length > 0) {
+          await tx.roleMapping.updateMany({
+            where: {
+              role_mapping_id: { in: toDeactivate.map(m => m.role_mapping_id) },
+            },
+            data: { is_active: false },
+          });
+        }
 
-            await tx.roleMapping.create({
-              data: {
-                role_mapping_id: newId,
-                role_id,
-                mits_uid,
-                is_active: true,
-              },
-            });
-          }
+        // Roles to add
+        const toAdd = role_ids.filter(rid => !currentRoleIds.includes(rid));
+        for (const rid of toAdd) {
+          const maxId = await tx.roleMapping.aggregate({
+            _max: { role_mapping_id: true },
+          });
+          const newId = (maxId._max.role_mapping_id || 0) + 1;
+
+          await tx.roleMapping.create({
+            data: {
+              role_mapping_id: newId,
+              role_id: rid,
+              mits_uid,
+              is_active: true,
+            },
+          });
         }
       }
     });
@@ -903,6 +902,147 @@ export async function updateUserService(payload: {
       success: false,
       statusCode: 500,
       message: "Internal server error",
+    };
+  }
+}
+
+export async function createUserService(payload: {
+  mits_uid: string;
+  name: string;
+  email?: string;
+  user_type_tag?: string;
+  role_ids?: number[];
+  profileData?: any;
+}): Promise<Result> {
+  const newlyCreatedFirebaseUids: string[] = [];
+  try {
+    const { mits_uid, name, email, user_type_tag = "FACULTY", role_ids, profileData } = payload;
+
+    // 1. Validation
+    const existing = await prisma.userAccount.findUnique({
+      where: { mits_uid },
+    });
+    if (existing) {
+      return { success: false, statusCode: 400, message: `User with MITS ID ${mits_uid} already exists` };
+    }
+
+    if (email) {
+      const existingEmail = await prisma.userAccount.findFirst({
+        where: { email },
+      });
+      if (existingEmail) {
+        return { success: false, statusCode: 400, message: `User with email ${email} already exists` };
+      }
+    }
+
+    const type = await prisma.userTypes.findFirst({
+      where: { user_type_tag: (user_type_tag || "FACULTY").toUpperCase() },
+    });
+    if (!type) {
+      return { success: false, statusCode: 400, message: `Invalid user type: ${user_type_tag}` };
+    }
+
+    // 2. Firebase User
+    let auth_uid = `temp_${mits_uid}`;
+    if (email) {
+      try {
+        const userRecord = await firebaseAuth.createUser({
+          email: email,
+          password: "ChangeMe123!",
+          displayName: name,
+        });
+        auth_uid = userRecord.uid;
+        newlyCreatedFirebaseUids.push(auth_uid);
+      } catch (fbError: any) {
+        if (fbError.code === 'auth/email-already-exists') {
+          const existingUser = await firebaseAuth.getUserByEmail(email);
+          auth_uid = existingUser.uid;
+        } else {
+          throw fbError;
+        }
+      }
+    }
+
+    // 3. Database Transaction
+    await prisma.$transaction(async (tx) => {
+      // UserAccount
+      await tx.userAccount.create({
+        data: { mits_uid, auth_uid, email: email ?? null, user_type: type.user_type_id },
+      });
+
+      // Profile
+      if (type.user_type_tag === "STUDENT") {
+        await tx.student.create({
+          data: {
+            mits_uid,
+            name,
+            batch_id: Number(profileData?.batch_id),
+            class_id: Number(profileData?.class_id),
+            hosteller: profileData?.hosteller === 'true' || profileData?.hosteller === true,
+            gender: profileData?.gender,
+            phone: profileData?.phone,
+          },
+        });
+      } else if (type.user_type_tag === "FACULTY") {
+        let deptId = Number(profileData?.department_id);
+
+        // Fallback for high-level roles added without a specific department
+        if (isNaN(deptId) || !deptId) {
+          const adminDept = await tx.departments.findFirst({
+            where: { dept_name: { contains: 'Administration', mode: 'insensitive' } }
+          });
+          const generalDept = await tx.departments.findFirst({
+            where: { dept_name: { contains: 'General', mode: 'insensitive' } }
+          });
+          const anyDept = await tx.departments.findFirst();
+
+          deptId = adminDept?.dept_id || generalDept?.dept_id || anyDept?.dept_id || 1;
+        }
+
+        await tx.faculty.create({
+          data: {
+            mits_uid,
+            name,
+            department_id: deptId,
+            email: email ?? null
+          },
+        });
+      }
+
+      // Role Mapping
+      if (role_ids && role_ids.length > 0) {
+        for (const rid of role_ids) {
+          const maxId = await tx.roleMapping.aggregate({ _max: { role_mapping_id: true } });
+          const nextId = (maxId._max.role_mapping_id || 0) + 1;
+          await tx.roleMapping.create({
+            data: {
+              role_mapping_id: nextId,
+              role_id: rid,
+              mits_uid,
+              is_active: true
+            }
+          });
+        }
+      }
+    });
+
+    return {
+      success: true,
+      statusCode: 201,
+      message: "User created successfully",
+    };
+  } catch (error: any) {
+    console.error("createUserService error:", error);
+
+    // Rollback Firebase
+    for (const uid of newlyCreatedFirebaseUids) {
+      try { await firebaseAuth.deleteUser(uid); } catch (e) { }
+    }
+
+    return {
+      success: false,
+      statusCode: 500,
+      message: `Failed to create user: ${error.message}`,
     };
   }
 }
@@ -1199,7 +1339,8 @@ export async function bulkImportUsersService(payload: {
             if (fbError.code === 'auth/email-already-exists') {
               const existingUser = await firebaseAuth.getUserByEmail(email);
               auth_uid = existingUser.uid;
-              // If it already existed in Firebase but not in our DB, we don't add to newlyCreatedFirebaseUids
+              // If it already existed in Firebase but n
+              // ot in our DB, we don't add to newlyCreatedFirebaseUids
               // as we shouldn't delete it if our transaction fails.
             } else {
               throw new Error(`Error at line ${rowNum} (Firebase): ${fbError.message}`);
@@ -1234,7 +1375,7 @@ export async function bulkImportUsersService(payload: {
               mits_uid,
               name,
               department_id: Number(profileData.department_id),
-              email
+              email: email ?? null
             },
           });
         }
