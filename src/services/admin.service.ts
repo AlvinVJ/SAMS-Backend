@@ -299,6 +299,8 @@ export async function getProcedureById(payload: {
           formFields: firestoreData?.formFields || [],
           approvalLevels: firestoreData?.approvalLevels || [],
           visibility: visibility,
+          isHosteller: firestoreData?.is_hosteller || firestoreData?.isHosteller || false,
+          systemHook: firestoreData?.system_hook || null,
         },
       },
     };
