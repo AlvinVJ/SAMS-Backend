@@ -1518,17 +1518,17 @@ export async function getAdminDashboardStatsService(): Promise<Result> {
 
         if (lastDecision) {
           const approverName = await getUserNameFromUid(lastDecision.mits_uid);
-          title = `${approverName} ${lastDecision.decision.toLowerCase()} Request #${req.req_id.substring(0, 5)}`;
+          title = `${approverName} ${lastDecision.decision.toLowerCase()} Request for ${req.Procedures?.title || "Unknown"}`;
           initials = approverName.split(' ').map((n: string) => n[0]).join('').toUpperCase().substring(0, 2);
           if (lastDecision.timestamp) time = new Date(lastDecision.timestamp);
         } else {
           const requesterName = await getUserNameFromUid(req.created_by);
-          title = `${requesterName} created Request #${req.req_id.substring(0, 5)}`;
+          title = `${requesterName} created Request for ${req.Procedures?.title || "Unknown"}`;
           initials = requesterName.split(' ').map((n: string) => n[0]).join('').toUpperCase().substring(0, 2);
         }
       } else {
         const requesterName = await getUserNameFromUid(req.created_by);
-        title = `${requesterName} created Request #${req.req_id.substring(0, 5)}`;
+        title = `${requesterName} created Request for ${req.Procedures?.title || "Unknown"}`;
         initials = requesterName.split(' ').map((n: string) => n[0]).join('').toUpperCase().substring(0, 2);
       }
 
