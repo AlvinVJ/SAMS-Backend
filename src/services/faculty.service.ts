@@ -1,5 +1,6 @@
 import { prisma } from "../db/prisma.js";
 import { firestore } from "../config/firebase.js";
+import { enrichStudentListInFormData, getUserNameFromUid } from "./requests.service.js";
 
 interface Result {
   success: boolean;
@@ -8,15 +9,6 @@ interface Result {
   data?: any;
 }
 
-async function getUserNameFromUid(uid: string): Promise<string> {
-  const account = await prisma.userAccount.findUnique({
-    where: { mits_uid: uid },
-    include: { Faculty: true, Student: true },
-  });
-  if (account?.Faculty?.name) return account.Faculty.name;
-  if (account?.Student?.name) return account.Student.name;
-  return "Unknown User";
-}
 
 async function resolveApproversForRole(roleTag: string, requesterUid: string): Promise<string[]> {
   const normalizedTag = roleTag.toLowerCase();
@@ -48,6 +40,7 @@ async function resolveApproversForRole(roleTag: string, requesterUid: string): P
   });
   return mappings.map(m => m.mits_uid);
 }
+
 
 export async function getRequestsToApproveService(payload: any) {
   try {
@@ -116,6 +109,19 @@ export async function getRequestsToApproveService(payload: any) {
         }
       }
 
+      // Enrich student lists (names/genders)
+      const sourceData = data.formData || data.form_response;
+      let students = null;
+      if (sourceData) {
+        data.formData = await enrichStudentListInFormData(sourceData, procedureDef, selectedRole);
+
+        // Expose student list at top level if found in formData
+        const studentListKey = Object.keys(data.formData).find(k => Array.isArray(data.formData[k]) && data.formData[k].length > 0 && data.formData[k][0].mits_uid);
+        if (studentListKey) {
+          students = data.formData[studentListKey];
+        }
+      }
+
       approvableRequests.push({
         id: req.req_id,
         type: req.Procedures?.title || "Request",
@@ -123,11 +129,13 @@ export async function getRequestsToApproveService(payload: any) {
         studentId: req.created_by,
         department: req.UserAccount?.Student?.Classes?.Departments?.dept_name || "N/A",
         date: req.created_at.toISOString().split("T")[0],
-        description: (data.formData || data.form_response) ? Object.entries(data.formData || data.form_response).map(([k, v]) => `${k}: ${v}`).join(" | ") : "No description",
+        description: (data.formData) ? Object.entries(data.formData).filter(([k]) => k !== "DEBUG_SYNC").map(([k, v]) => `${k}: ${v}`).join(" | ") : "No description",
         attachments: data.attachments || [],
         roleTag: app.approvalType || selectedRole,
         color: "blue",
-        formData: data.formData || data.form_response || {},
+        formData: data.formData || {},
+        students: students,
+        isBulk: students !== null,
         approvalHistory: approvalHistory,
         lastLevelRoleTag: (procedureDef as any)?.approvalLevels?.length > 0
           ? ((procedureDef as any).approvalLevels[(procedureDef as any).approvalLevels.length - 1].role || (procedureDef as any).approvalLevels[(procedureDef as any).approvalLevels.length - 1].roleIds?.[0] || "Approver")
@@ -188,7 +196,6 @@ export async function approveRequestService(payload: any): Promise<Result> {
       levelBlock.net_status = "APPROVED";
 
       // 2. Clear remaining action items for this request at the current level (if any)
-      // This is important for cases where minApprovals < total potential approvers
       await prisma.toApprove.deleteMany({
         where: { req_id: requestId, approvalLevel: currentLevel }
       });
@@ -308,7 +315,7 @@ export async function rejectRequestService(payload: any): Promise<Result> {
     if (myDecision) {
       myDecision.decision = "REJECTED";
       myDecision.timestamp = new Date().toISOString();
-      myDecision.comments = reason; // Save as comments for timeline
+      myDecision.comments = reason;
       myDecision.role = role;
     }
 
@@ -329,7 +336,6 @@ export async function rejectRequestService(payload: any): Promise<Result> {
       data: { status: 2 }
     });
 
-    // Clear ToApprove buffer entries for this request
     await prisma.toApprove.deleteMany({
       where: { req_id: requestId }
     });
@@ -399,6 +405,19 @@ export async function getActedRequestsService(user: any): Promise<Result> {
           include: { Student: { include: { Classes: { include: { Departments: true } } } } }
         });
 
+        // Enrich student lists (names/genders)
+        const sourceData = data.formData || data.form_response;
+        let students = null;
+        if (sourceData) {
+          data.formData = await enrichStudentListInFormData(sourceData, procDoc.exists ? procDoc.data() : null);
+
+          // Expose student list at top level if found in formData
+          const studentListKey = Object.keys(data.formData).find(k => Array.isArray(data.formData[k]) && data.formData[k].length > 0 && data.formData[k][0].mits_uid);
+          if (studentListKey) {
+            students = data.formData[studentListKey];
+          }
+        }
+
         let approvalHistory: any[] = [];
         const historyBlocks = (data.approval_progress || []);
         for (const block of historyBlocks) {
@@ -414,7 +433,6 @@ export async function getActedRequestsService(user: any): Promise<Result> {
                 comments: decision.comments,
                 timestamp: decision.timestamp ? decision.timestamp.split('T')[0] : ""
               };
-              console.log(`[DEBUG] History entry for ${req_id} level ${block.level}:`, histEntry);
               approvalHistory.push(histEntry);
             }
           }
@@ -429,7 +447,9 @@ export async function getActedRequestsService(user: any): Promise<Result> {
           color,
           current_level: data.current_level || 1,
           total_levels,
-          formData: data.formData || data.form_response || {},
+          formData: data.formData || {},
+          students: students,
+          isBulk: students !== null,
           studentName: userData?.Student?.name || data.studentName || "Unknown",
           studentId: prismaReq?.created_by,
           department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
@@ -455,7 +475,6 @@ export async function getFacultyDashboardDataService(user: any, query: any): Pro
     const facultyUid = userAccount.mits_uid.trim();
     const selectedRole = (query?.role as string)?.trim().toLowerCase();
 
-    // 1. Fetch Approved/Rejected stats from SQL Analytics table
     let approvedCount = 0;
     let rejectedCount = 0;
 
@@ -471,7 +490,6 @@ export async function getFacultyDashboardDataService(user: any, query: any): Pro
         rejectedCount = stats?.rejected || 0;
       }
     } else {
-      // "all" role: Sum stats for all roles of this faculty
       const stats = await prisma.analytics.aggregate({
         where: { mits_uid: facultyUid },
         _sum: { approved: true, rejected: true }
@@ -480,7 +498,6 @@ export async function getFacultyDashboardDataService(user: any, query: any): Pro
       rejectedCount = stats._sum.rejected || 0;
     }
 
-    // 2. Consolidate Firestore scanning for Breakdown
     const procTitlesSnap = await prisma.procedures.findMany({ select: { proc_id: true, title: true } });
     const procMap: Record<string, string> = {};
     procTitlesSnap.forEach(p => procMap[p.proc_id] = p.title);
@@ -505,12 +522,10 @@ export async function getFacultyDashboardDataService(user: any, query: any): Pro
       }
     }
 
-    // 3. Fetch Pending Approvals for this faculty
     const pendingApprovals = await getRequestsToApproveService({ user: { mits_uid: facultyUid }, query: { role: selectedRole || "all" } });
     const pendingList = (pendingApprovals.success && pendingApprovals.data) ? (pendingApprovals.data.requests || []) : [];
     const pendingCount = pendingList.length;
 
-    // 4. Formatting output
     return {
       success: true,
       statusCode: 200,
@@ -569,14 +584,11 @@ export async function getFacultyProfileService(user: any): Promise<Result> {
     }
 
     const faculty = userAccount.Faculty;
-
-    // Group assigned classes with their roles
     const assignedClasses = faculty.ClassFaculty.map(cf => ({
       className: cf.Classes.class,
       role: cf.role_tag.replaceAll('_', ' ').toUpperCase()
     }));
 
-    // Get organizational roles
     const roles = userAccount.RoleMapping.map(rm => rm.Roles.role_tag.replaceAll('_', ' ').toUpperCase());
 
     return {
@@ -590,7 +602,6 @@ export async function getFacultyProfileService(user: any): Promise<Result> {
         department: faculty.Departments.dept_name,
         assignedClasses: assignedClasses,
         roles: roles,
-        // Since designation is not in schema yet, we use a default or null
         designation: "Faculty Member"
       }
     };
@@ -607,8 +618,6 @@ export async function getFacultyNotificationsService(user: any): Promise<Result>
     const facultyUid = userAccount.mits_uid.trim();
 
     const notifications: any[] = [];
-
-    // 1. Fetch requests created by this faculty (Status Updates)
     const myRequests = await prisma.requests.findMany({
       where: { created_by: facultyUid },
       include: { Procedures: true },
@@ -632,7 +641,6 @@ export async function getFacultyNotificationsService(user: any): Promise<Result>
       });
     });
 
-    // 2. Fetch requests pending their approval (Action Required)
     const pendingResult = await getRequestsToApproveService({ user: { mits_uid: facultyUid }, query: { role: "all" } });
     if (pendingResult.success && pendingResult.data?.requests) {
       pendingResult.data.requests.forEach((req: any) => {
@@ -640,14 +648,13 @@ export async function getFacultyNotificationsService(user: any): Promise<Result>
           id: `pending-${req.id}`,
           title: "Action Required",
           description: `${req.studentName} has submitted a "${req.type}" for your approval.`,
-          time: new Date(req.date).toISOString(), // Mocking time from date
+          time: new Date(req.date).toISOString(),
           isUnread: true,
           type: "warning"
         });
       });
     }
 
-    // Sort all notifications by time desc
     notifications.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
 
     return { success: true, statusCode: 200, message: "Notifications fetched", data: notifications };

@@ -19,6 +19,7 @@ import {
   deleteClass,
   getUsers,
   updateUser,
+  createUser,
   getRoles,
   getUserTypes,
   getGlobalRequests,
@@ -73,6 +74,7 @@ adminRouter.delete("/class/:id", deleteClass);
 
 // Users
 adminRouter.get("/users", getUsers);
+adminRouter.post("/user", createUser);
 adminRouter.put("/user/:id", updateUser);
 adminRouter.get("/roles", getRoles);
 adminRouter.post("/role", createRole);

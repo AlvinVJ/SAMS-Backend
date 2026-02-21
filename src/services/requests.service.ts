@@ -63,6 +63,97 @@ async function resolveApproversForRole(roleTag: string, requesterUid: string): P
   return mappings.map(m => m.mits_uid);
 }
 
+export async function enrichStudentListInFormData(formData: any, procedureDef: any, selectedRole?: string) {
+  if (!formData) return formData;
+
+  for (const key of Object.keys(formData)) {
+    let value = formData[key];
+    if (!Array.isArray(value) || value.length === 0) continue;
+
+    // Detection: Is this a student list? 
+    const isMapList = typeof value[0] === 'object' && value[0] !== null;
+    const isStringList = typeof value[0] === 'string';
+
+    if (isMapList || isStringList) {
+      let uidKey = '';
+      if (isMapList) {
+        // Robust check for various UID keys
+        const first = value[0];
+        const keys = Object.keys(first).map(k => k.toLowerCase());
+        if (keys.includes('mits_uid')) uidKey = Object.keys(first).find(k => k.toLowerCase() === 'mits_uid')!;
+        else if (keys.includes('mitsuid')) uidKey = Object.keys(first).find(k => k.toLowerCase() === 'mitsuid')!;
+        else if (keys.includes('uid')) uidKey = Object.keys(first).find(k => k.toLowerCase() === 'uid')!;
+        else if (keys.includes('mits_id')) uidKey = Object.keys(first).find(k => k.toLowerCase() === 'mits_id')!;
+        else if (keys.includes('mitsid')) uidKey = Object.keys(first).find(k => k.toLowerCase() === 'mitsid')!;
+
+        if (!uidKey) {
+          console.log(`[DEBUG] Key "${key}" looks like list of maps but no UID key found in first item:`, first);
+          continue;
+        }
+      }
+
+      const rawUids = value.map((s: any) => (isStringList ? s : s[uidKey])?.toString().trim()).filter(Boolean);
+      if (rawUids.length === 0) continue;
+
+      console.log(`[DEBUG] Found student list in field "${key}" (${isMapList ? 'Maps' : 'Strings'}) with ${rawUids.length} UIDs.`);
+
+      // Prisma 'in' doesn't support 'mode: insensitive', so we normalize if possible or just use multiple query checks
+      // Usually UIDs are uppercase in SAMS system. 
+      const studentDetails = await prisma.student.findMany({
+        where: { mits_uid: { in: rawUids } },
+        select: { mits_uid: true, name: true, gender: true }
+      });
+
+      // Try once more with lowercased UIDs if nothing found (safety search)
+      if (studentDetails.length === 0) {
+        const lowerUids = rawUids.map(u => u.toLowerCase());
+        const upperUids = rawUids.map(u => u.toUpperCase());
+        const compositeUids = [...new Set([...rawUids, ...lowerUids, ...upperUids])];
+
+        const retryDetails = await prisma.student.findMany({
+          where: { mits_uid: { in: compositeUids } },
+          select: { mits_uid: true, name: true, gender: true }
+        });
+        studentDetails.push(...retryDetails);
+      }
+
+      console.log(`[DEBUG] Prisma found ${studentDetails.length} matching students for list in "${key}".`);
+
+      const studentMap = new Map();
+      studentDetails.forEach(s => {
+        studentMap.set(s.mits_uid.toLowerCase().trim(), s);
+      });
+
+      let enrichedList = value.map((s: any) => {
+        const rawUid = (isStringList ? s : s[uidKey])?.toString().trim();
+        const uid = rawUid?.toLowerCase();
+        const details = studentMap.get(uid);
+
+        // NORMALIZATION: Must return a Map with 'name' and 'gender' for the frontend
+        const baseObj = isMapList ? { ...s } : {};
+        return {
+          ...baseObj,
+          mits_uid: rawUid,
+          name: details?.name || `!!! NOT_IN_SQL:${rawUid} !!!`,
+          gender: details?.gender || "NA"
+        };
+      });
+
+      // Filter based on Warden role only if it's a Hosteller procedure
+      if (procedureDef?.is_hosteller || procedureDef?.isHosteller) {
+        if (selectedRole === 'warden_boys') {
+          enrichedList = enrichedList.filter(s => s.gender?.toLowerCase() === 'male' || s.gender?.toLowerCase() === 'm' || s.gender?.toLowerCase() === 'b');
+        } else if (selectedRole === 'warden_girls') {
+          enrichedList = enrichedList.filter(s => s.gender?.toLowerCase() === 'female' || s.gender?.toLowerCase() === 'f' || s.gender?.toLowerCase() === 'g');
+        }
+      }
+
+      formData[key] = enrichedList;
+    }
+  }
+  return formData;
+}
+
 export async function createRequest(payload: { body: any; user: any }): Promise<Result> {
   try {
     const { procedureId, formData } = payload.body;
@@ -245,6 +336,19 @@ export async function getMyRequests(user: any): Promise<Result> {
           : null;
         const lastLevelRoleTag = lastLevel?.role || lastLevel?.roleIds?.[0] || "Approver";
 
+        // Enrich student lists for the student view too
+        const sourceData = data.formData || data.form_response;
+        let students = null;
+        if (sourceData) {
+          data.formData = await enrichStudentListInFormData(sourceData, procData);
+
+          // Expose student list at top level if found in formData
+          const studentListKey = Object.keys(data.formData).find(k => Array.isArray(data.formData[k]) && data.formData[k].length > 0 && data.formData[k][0].mits_uid);
+          if (studentListKey) {
+            students = data.formData[studentListKey];
+          }
+        }
+
         formatted.push({
           req_id: req.req_id,
           procedure_title: req.Procedures?.title || "Unknown Request",
@@ -255,7 +359,9 @@ export async function getMyRequests(user: any): Promise<Result> {
           current_level,
           total_levels,
           approvalHistory,
-          formData: data.formData || data.form_response || {},
+          formData: data.formData || {},
+          students: students,
+          isBulk: students !== null,
           studentName: userData?.Student?.name || data.studentName || "Unknown",
           studentId: req.created_by,
           department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",

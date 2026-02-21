@@ -59,7 +59,7 @@ app.use("/api/helper", helperRouter);
 
 app.get("/health/db", async (_req, res) => {
   try {
-    await prisma.$queryRaw `SELECT 1`;
+    await prisma.$queryRaw`SELECT 1`;
     res.json({ status: "Azure SQL connected" });
   } catch (error: any) {
     console.error("DB Health Check Failed:", error);
