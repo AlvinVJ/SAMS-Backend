@@ -655,3 +655,58 @@ export async function getRoleTags(
     };
   }
 }
+
+export async function searchFaculty(payload: BasicPayload): Promise<BasicResult> {
+  try {
+    const { query } = payload.body;
+    if (!query || query.trim().length < 2) {
+      return {
+        success: true,
+        statusCode: 200,
+        message: "Search query too short",
+        data: { faculty: [] }
+      };
+    }
+
+    const faculty = await prisma.faculty.findMany({
+      where: {
+        OR: [
+          { name: { contains: query, mode: "insensitive" } },
+          { mits_uid: { contains: query, mode: "insensitive" } }
+        ],
+        is_active: true,
+        deleted_at: null
+      },
+      select: {
+        mits_uid: true,
+        name: true,
+        email: true,
+        Departments: {
+          select: { dept_name: true }
+        }
+      },
+      take: 10
+    });
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Faculty search results",
+      data: {
+        faculty: faculty.map(f => ({
+          uid: f.mits_uid,
+          name: f.name,
+          email: f.email,
+          department: f.Departments?.dept_name || "N/A"
+        }))
+      }
+    };
+  } catch (error) {
+    console.error("searchFaculty service error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
+}

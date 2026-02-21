@@ -229,7 +229,7 @@ model ToApprove {
   req_id        String
   created_at    DateTime    @default(now()) @db.Timestamptz(6)
   approverUID   String
-  approvalLevel Int?
+  approvalLevel Float?
   approvalType  String?
   UserAccount   UserAccount @relation(fields: [approverUID], references: [mits_uid], onDelete: NoAction, onUpdate: NoAction)
   Requests      Requests    @relation(fields: [req_id], references: [req_id], onDelete: NoAction, onUpdate: NoAction)

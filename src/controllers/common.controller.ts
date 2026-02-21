@@ -16,11 +16,6 @@ export async function ping(
 
 export async function signup(req: Request, res: Response) {
   try {
-    const authHeader =
-      typeof req.headers.authorization === "string"
-        ? req.headers.authorization
-        : undefined;
-
     const result = await CommonService.signup({
       user: req.user,
       body: req.body,
@@ -41,17 +36,31 @@ export async function signup(req: Request, res: Response) {
   }
 }
 
-export async function fetch_procedures(req: Request, res: Response){
+export async function search_faculty(req: Request, res: Response) {
   try {
-    const authHeader =
-      typeof req.headers.authorization === "string"
-        ? req.headers.authorization
-        : undefined;
+    const result = await CommonService.searchFaculty({
+      user: req.user,
+      body: req.body,
+    });
 
+    return res.status(result.statusCode).json({
+      success: result.success,
+      message: result.message,
+      data: result.data ?? null,
+    });
+  } catch (err) {
+    console.error("search_faculty controller error:", err);
+
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+}
+
+export async function fetch_procedures(req: Request, res: Response) {
+  try {
     const result = await CommonService.fetch_procedures({
-      // headers: {
-      //   authorization: authHeader,
-      // },
       user: req.user,
       body: req.body,
     });
@@ -71,17 +80,9 @@ export async function fetch_procedures(req: Request, res: Response){
   }
 }
 
-export async function create_request(req: Request, res: Response){
+export async function create_request(req: Request, res: Response) {
   try {
-    const authHeader =
-      typeof req.headers.authorization === "string"
-        ? req.headers.authorization
-        : undefined;
-
     const result = await CommonService.create_request({
-      // headers: {
-      //   authorization: authHeader,
-      // },
       user: req.user,
       body: req.body,
     });
@@ -103,11 +104,6 @@ export async function create_request(req: Request, res: Response){
 
 export async function get_role_tags(req: Request, res: Response) {
   try {
-    const authHeader =
-      typeof req.headers.authorization === "string"
-        ? req.headers.authorization
-        : undefined;
-
     const result = await CommonService.getRoleTags({
       user: req.user,
       body: req.body,
@@ -119,7 +115,7 @@ export async function get_role_tags(req: Request, res: Response) {
       data: result.data ?? null,
     });
   } catch (err) {
-    console.error("Signup controller error:", err);
+    console.error("get_role_tags controller error:", err);
 
     return res.status(500).json({
       success: false,
