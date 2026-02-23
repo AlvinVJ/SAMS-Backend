@@ -10,7 +10,7 @@ async function getSampleData() {
     const students = await prisma.student.findMany({
         take: 10,
         include: {
-            Class: {
+            Classes: {
                 include: {
                     ClassFaculty: {
                         where: { is_active: true, role_tag: 'CLASS_ADVISOR' },
@@ -24,8 +24,8 @@ async function getSampleData() {
     console.log("\nStudent Samples:");
     const tableData = students.map(s => ({
         uid: s.mits_uid,
-        class: s.class_id?.class_name,
-        advisor: s.class_id?.ClassFaculty?.[0]?.Faculty?.mits_uid || 'NONE'
+        class: s.Classes?.class,
+        advisor: s.Classes?.ClassFaculty?.[0]?.Faculty?.mits_uid || 'NONE'
     }));
     console.table(tableData);
 
