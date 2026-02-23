@@ -39,7 +39,7 @@
 // src/db/prisma.ts
 // src/db/prisma.ts
 import "dotenv/config";
-import { PrismaClient } from "../../generated/prisma/client.js";
+import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from '@prisma/adapter-pg'
 
 const globalForPrisma = globalThis as unknown as {
