@@ -2,12 +2,12 @@
   // Visit https://aka.ms/tsconfig to read more about this file
   "compilerOptions": {
     // File Layout
-    // "rootDir": "./src",
-    // "outDir": "./dist",
+     "rootDir": "./src",
+     "outDir": "./dist",
 
     // Environment Settings
     // See also https://aka.ms/tsconfig/module
-   "module": "NodeNext",
+    "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "target": "ES2023",
     "types": ["node"],
@@ -43,5 +43,7 @@
     "skipLibCheck": true,
     "esModuleInterop": true
     //"ignoreDeprecations": "6.0"
-  }
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist"]
 }
