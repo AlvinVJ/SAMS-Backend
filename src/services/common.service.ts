@@ -535,7 +535,7 @@ export async function create_request(
     });
 
     //publishRequestSubmitted(req_id);
-    publishApprovalAlert(req_id,"22CS321");
+    publishApprovalAlert(req_id,"22cs321");
 
 
     return {
