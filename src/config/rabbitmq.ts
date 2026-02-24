@@ -6,10 +6,10 @@ import type { Channel, ChannelModel } from "amqplib";
 let connection: ChannelModel;
 let channel: Channel;
 
-// Queue names (centralized here)
+// ✅ Queue names (Priority-based)
 export const QUEUES = {
-  APPROVAL: "approval_queue",
-  NOTIFICATION: "notification_queue",
+  IMPORTANT: "important_queue", // High priority alerts (approvals, request updates)
+  PUSH: "push_queue", // Low priority push-only notifications
 };
 
 // ✅ Connect RabbitMQ only once when server starts
@@ -18,9 +18,11 @@ export async function connectRabbitMQ() {
     connection = await amqp.connect("amqp://localhost");
     channel = await connection.createChannel();
 
-    // Assert queues (creates them if they don’t exist)
-    await channel.assertQueue(QUEUES.APPROVAL, { durable: true });
-    await channel.assertQueue(QUEUES.NOTIFICATION, { durable: true });
+    channel.prefetch(1);
+
+    // ✅ Assert queues (creates them if they don’t exist)
+    await channel.assertQueue(QUEUES.IMPORTANT, { durable: true });
+    await channel.assertQueue(QUEUES.PUSH, { durable: true });
 
     console.log("✅ RabbitMQ Connected Successfully!");
     console.log("Queues ready:", Object.values(QUEUES));
@@ -39,16 +41,16 @@ export function sendToQueue(queueName: string, data: object) {
   }
 
   channel.sendToQueue(queueName, Buffer.from(JSON.stringify(data)), {
-    persistent: true,
+    persistent: true, // ensures message survives broker restart
   });
 
   console.log(`📩 Message sent to queue: ${queueName}`);
 }
 
-// ✅ Helper: Consume messages from a queue
+// ✅ Helper: Consume messages from a queue (SAFE ACK)
 export async function consumeQueue(
   queueName: string,
-  callback: (msg: any) => void
+  callback: (msg: any) => Promise<void>
 ) {
   if (!channel) {
     throw new Error(
@@ -56,14 +58,25 @@ export async function consumeQueue(
     );
   }
 
-  await channel.consume(queueName, (msg) => {
-    if (msg) {
-      const content = JSON.parse(msg.content.toString());
+  await channel.consume(queueName, async (msg) => {
+    if (!msg) return;
 
-      callback(content);
+    const content = JSON.parse(msg.content.toString());
 
-      // Acknowledge message after processing
+    try {
+      // ✅ Wait until processing finishes
+      await callback(content);
+
+      // ✅ Ack ONLY after successful processing
       channel.ack(msg);
+
+      console.log(`✅ Message processed + acked from: ${queueName}`);
+    } catch (error) {
+      console.error(`❌ Error processing message from ${queueName}:`, error);
+
+      // ❌ Do NOT ack → message will retry later
+      // Optional retry behavior:
+      // channel.nack(msg, false, true);
     }
   });
 

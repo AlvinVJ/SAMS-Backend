@@ -2,6 +2,7 @@ import { prisma } from "../db/prisma.js";
 import admin from "../config/firebase.js";
 import { firebaseAuth, firestore } from "../config/firebase.js";
 import { processPlacementAttendance } from "./placement.service.js";
+import { publishApprovalAlert } from "../queues/producers/importantProducer.js";
 
 
 async function resolveApproversForRole(
@@ -533,38 +534,8 @@ export async function create_request(
       },
     });
 
-    // 4. Populate ToApprove table for initial level approvers
-    if (initialApprovers.length > 0) {
-      await prisma.toApprove.createMany({
-        data: initialApprovers.map(uid => ({
-          req_id: req_id,
-          approverUID: uid,
-          approvalLevel: 1,
-          approvalType: initialRole || "Approver"
-        })),
-        skipDuplicates: true
-      });
-
-      // 5. Update Analytics pending count
-      try {
-        if (initialRole) {
-          const roleRow = await prisma.roles.findFirst({
-            where: { role_tag: { equals: initialRole, mode: 'insensitive' } }
-          });
-          if (roleRow) {
-            for (const approverUid of initialApprovers) {
-              await prisma.analytics.upsert({
-                where: { mits_uid_role_id: { mits_uid: approverUid, role_id: roleRow.role_id } },
-                create: { mits_uid: approverUid, role_id: roleRow.role_id, pending: 1, approved: 0, rejected: 0 },
-                update: { pending: { increment: 1 } }
-              });
-            }
-          }
-        }
-      } catch (e) {
-        console.error("Analytics pending update failed:", e);
-      }
-    }
+    //publishRequestSubmitted(req_id);
+    publishApprovalAlert(req_id,"22CS321");
 
 
     return {
