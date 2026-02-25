@@ -1760,8 +1760,8 @@ export async function assignClassRole(payload: {
 
 export async function removeClassRole(payload: {
   class_id: number,
-  mits_uid: string,
-  role_tag: string
+  mits_uid: string ,
+  role_tag: string 
 }): Promise<Result> {
   try {
     await prisma.classFaculty.update({
