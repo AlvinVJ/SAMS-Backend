@@ -38,7 +38,8 @@ app.use(
         origin.startsWith("http://localhost") ||
         origin.startsWith("http://127.0.0.1") ||
         origin.startsWith("https://sams-d2236.firebaseapp.com")||
-        origin.startsWith("https://sams-d2236.web.app")
+        origin.startsWith("https://sams-d2236.web.app")||
+        origin.startsWith("https://api.sams2026proj.app")
       ) {
         return callback(null, true);
       }
