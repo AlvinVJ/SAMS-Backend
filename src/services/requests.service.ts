@@ -25,7 +25,7 @@ export async function getUserNameFromUid(uid: string): Promise<string> {
 export async function resolveRequestStatus(req: any, procData: any, currentLevel: number): Promise<{ text: string, color: string }> {
   if (req.status === 1) return { text: "Approved", color: "success" };
   if (req.status === 2) return { text: "Rejected", color: "error" };
-  if (req.status === 3) return { text: "Withdrawn", color: "error" };
+  if (req.status === 3) return { text: "Withdrawn", color: "withdrawn" };
 
   const activeLevel = procData?.approvalLevels?.find((l: any) => l.level === currentLevel);
   const roleName = (activeLevel?.role || activeLevel?.roleIds?.[0] || "Approver").replaceAll('_', ' ').toUpperCase();
@@ -299,8 +299,8 @@ export async function getMyRequests(user: any): Promise<Result> {
         procedure_title: req.Procedures?.title || "Unknown Request",
         created_at: req.created_at,
         status: req.status,
-        status_text: req.status === 1 ? "Approved" : (req.status === 2 ? "Rejected" : "Pending"),
-        color: req.status === 1 ? "success" : (req.status === 2 ? "error" : "warning"),
+        status_text: req.status === 1 ? "Approved" : (req.status === 2 ? "Rejected" : (req.status === 3 ? "Withdrawn" : "Pending")),
+        color: req.status === 1 ? "success" : (req.status === 2 ? "error" : (req.status === 3 ? "withdrawn" : "warning")),
         studentName: userData?.Student?.name || "Unknown",
         studentId: req.created_by,
         department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
