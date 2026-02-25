@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
 import * as RequestsService from "../services/requests.service.js";
+import { request } from "node:http";
 
 export async function createRequest(req: Request, res: Response) {
   try {
@@ -35,7 +36,7 @@ export async function getStudentDashboardData(req: Request, res: Response) {
 }
 export async function getRequestDetails(req: Request, res: Response) {
   try {
-    const reqId = req.params.reqId;
+    const reqId = req.params.reqId as string;
     if (!reqId) {
       return res.status(400).json({ success: false, message: "Request ID is required" });
     }
@@ -47,7 +48,7 @@ export async function getRequestDetails(req: Request, res: Response) {
   }
 }
 
-export async function withdrawRequest(req: Request, res: Response) {
+export async function withdrawRequest(req: Request<{ requestId: string }>, res: Response) {
   try {
     const { requestId } = req.params;
     const result = await RequestsService.withdrawRequest(requestId, req.user);
