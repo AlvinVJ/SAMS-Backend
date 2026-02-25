@@ -1,5 +1,5 @@
 
-import { PrismaClient } from '../generated/prisma';
+import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
@@ -7,10 +7,10 @@ async function getSampleData() {
     console.log("--- FETCHING SAMPLE STUDENT DATA FOR PLACEMENT TEST ---");
 
     // Get students with their class and class advisor
-    const students = await prisma.students.findMany({
+    const students = await prisma.student.findMany({
         take: 10,
         include: {
-            Class: {
+            Classes: {
                 include: {
                     ClassFaculty: {
                         where: { is_active: true, role_tag: 'CLASS_ADVISOR' },
@@ -24,8 +24,8 @@ async function getSampleData() {
     console.log("\nStudent Samples:");
     const tableData = students.map(s => ({
         uid: s.mits_uid,
-        class: s.Class?.class_name,
-        advisor: s.Class?.ClassFaculty?.[0]?.Faculty?.mits_uid || 'NONE'
+        class: s.Classes?.class,
+        advisor: s.Classes?.ClassFaculty?.[0]?.Faculty?.mits_uid || 'NONE'
     }));
     console.table(tableData);
 
