@@ -33,3 +33,16 @@ export async function getStudentDashboardData(req: Request, res: Response) {
     return res.status(500).json({ success: false, message: "Internal server error" });
   }
 }
+export async function getRequestDetails(req: Request, res: Response) {
+  try {
+    const reqId = req.params.reqId;
+    if (!reqId) {
+      return res.status(400).json({ success: false, message: "Request ID is required" });
+    }
+    const result = await RequestsService.getRequestDetails(reqId);
+    return res.status(result.statusCode).json(result);
+  } catch (err) {
+    console.error("getRequestDetails controller error:", err);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+}
