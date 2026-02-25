@@ -46,3 +46,14 @@ export async function getRequestDetails(req: Request, res: Response) {
     return res.status(500).json({ success: false, message: "Internal server error" });
   }
 }
+
+export async function withdrawRequest(req: Request, res: Response) {
+  try {
+    const { requestId } = req.params;
+    const result = await RequestsService.withdrawRequest(requestId, req.user);
+    return res.status(result.statusCode).json(result);
+  } catch (err) {
+    console.error("withdrawRequest controller error:", err);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+}

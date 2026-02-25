@@ -1,5 +1,5 @@
 import { prisma } from "../db/prisma.js";
-import { firestore } from "../config/firebase.js";
+import admin, { firestore } from "../config/firebase.js";
 
 interface Result {
   success: boolean;
@@ -25,6 +25,7 @@ export async function getUserNameFromUid(uid: string): Promise<string> {
 export async function resolveRequestStatus(req: any, procData: any, currentLevel: number): Promise<{ text: string, color: string }> {
   if (req.status === 1) return { text: "Approved", color: "success" };
   if (req.status === 2) return { text: "Rejected", color: "error" };
+  if (req.status === 3) return { text: "Withdrawn", color: "error" };
 
   const activeLevel = procData?.approvalLevels?.find((l: any) => l.level === currentLevel);
   const roleName = (activeLevel?.role || activeLevel?.roleIds?.[0] || "Approver").replaceAll('_', ' ').toUpperCase();
@@ -465,3 +466,73 @@ export async function getStudentDashboardData(user: any): Promise<Result> {
   }
 }
 
+export async function withdrawRequest(requestId: string, user: any): Promise<Result> {
+  try {
+    const userAccount = await prisma.userAccount.findUnique({ where: { auth_uid: user.uid } });
+    if (!userAccount) return { success: false, statusCode: 404, message: "User not found" };
+
+    const request = await prisma.requests.findUnique({
+      where: { req_id: requestId }
+    });
+
+    if (!request) return { success: false, statusCode: 404, message: "Request not found" };
+    if (request.created_by !== userAccount.mits_uid) {
+      return { success: false, statusCode: 403, message: "Not authorized to withdraw this request" };
+    }
+    if (request.status !== 0) {
+      return { success: false, statusCode: 400, message: "Only pending requests can be withdrawn" };
+    }
+
+    // 1. Get current approvers to decrement analytics
+    const pendingApprovals = await prisma.toApprove.findMany({
+      where: { req_id: requestId }
+    });
+
+    for (const app of pendingApprovals) {
+      try {
+        if (app.approvalType) {
+          const roleRow = await prisma.roles.findFirst({
+            where: { role_tag: { equals: app.approvalType, mode: 'insensitive' } }
+          });
+          if (roleRow) {
+            await prisma.analytics.update({
+              where: { mits_uid_role_id: { mits_uid: app.approverUID, role_id: roleRow.role_id } },
+              data: { pending: { decrement: 1 } }
+            }).catch(() => { }); // Ignore if record doesn't exist
+          }
+        }
+      } catch (e) {
+        console.error("Failed to decrement analytics during withdrawal:", e);
+      }
+    }
+
+    // 2. Delete action items
+    await prisma.toApprove.deleteMany({
+      where: { req_id: requestId }
+    });
+
+    // 3. Update SQL status
+    await prisma.requests.update({
+      where: { req_id: requestId },
+      data: { status: 3 }
+    });
+
+    // 4. Update Firestore status
+    const nowISO = new Date().toISOString();
+    await firestore.collection("requests").doc(requestId).update({
+      status: "WITHDRAWN",
+      updatedAt: nowISO,
+      last_updated_at: nowISO,
+      timeline: admin.firestore.FieldValue.arrayUnion({
+        action: "WITHDRAWN",
+        by: "STUDENT",
+        timestamp: nowISO
+      })
+    });
+
+    return { success: true, statusCode: 200, message: "Request withdrawn successfully" };
+  } catch (error: any) {
+    console.error("withdrawRequest error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
