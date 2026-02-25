@@ -209,6 +209,7 @@ model UserAccount {
   RoleMapping RoleMapping[]
   Student     Student?
   ToApprove   ToApprove[]
+  FCMTokens   FCMTokens[]
   UserTypes   UserTypes     @relation(fields: [user_type], references: [user_type_id])
 
   @@index([is_active])
@@ -246,4 +247,16 @@ model DepartmentFaculty {
   Departments Departments @relation(fields: [dept_id], references: [dept_id], onDelete: NoAction, onUpdate: NoAction)
   Faculty     Faculty     @relation(fields: [mits_uid], references: [mits_uid], onDelete: NoAction, onUpdate: NoAction)
   Roles       Roles?      @relation(fields: [role_id], references: [role_id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+model FCMTokens {
+  mits_uid   String
+  session_id String
+  fcm_token  String
+  created_at DateTime @default(now())
+
+  UserAccount UserAccount @relation(fields: [mits_uid], references: [mits_uid], onDelete: Cascade)
+
+  @@id([mits_uid, session_id])
+  @@index([mits_uid])
 }

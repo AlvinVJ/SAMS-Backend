@@ -6,6 +6,9 @@ import {
   QUEUES,
 } from "../../config/rabbitmq.js";
 
+import { fcm } from "../../config/firebase.js";
+import { prisma } from "../../db/prisma.js";
+
 async function startPushWorker() {
   // ✅ Connect first
   await connectRabbitMQ();

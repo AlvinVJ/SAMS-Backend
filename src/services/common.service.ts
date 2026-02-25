@@ -535,7 +535,7 @@ export async function create_request(
     });
 
     //publishRequestSubmitted(req_id);
-    publishApprovalAlert(req_id,"22cs321");
+    publishApprovalAlert(req_id, "22cs321");
 
 
     return {
@@ -619,6 +619,59 @@ export async function getRoleTags(
   } catch (error) {
     console.error("getMyRoleTagsService error:", error);
 
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
+}
+
+export async function saveFCMToken(payload: BasicPayload): Promise<BasicResult> {
+  try {
+    const { mits_uid } = payload.user;
+    const { fcm_token } = payload.body;
+
+    // We optionally take session_id from client, or fallback to an auto-generated one if missing
+    // Since Firebase Web SDK doesn't natively expose a session ID, we can use the token itself as the session ID mapping,
+    // or just let the client send a unique device identifier.
+    // For simplicity, we define session_id as a composite of mits_uid + last 8 chars of token if not provided.
+    const session_id = payload.body.session_id || fcm_token.slice(-8);
+
+    if (!fcm_token) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "fcm_token is required",
+      };
+    }
+
+    // Upsert the token for this session
+    await prisma.fCMTokens.upsert({
+      where: {
+        mits_uid_session_id: {
+          mits_uid,
+          session_id,
+        },
+      },
+      update: {
+        fcm_token,
+        created_at: new Date(),
+      },
+      create: {
+        mits_uid,
+        session_id,
+        fcm_token,
+      },
+    });
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "FCM token saved successfully",
+    };
+  } catch (error) {
+    console.error("saveFCMToken service error:", error);
     return {
       success: false,
       statusCode: 500,

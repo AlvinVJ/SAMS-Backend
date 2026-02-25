@@ -41,7 +41,7 @@ export async function signup(req: Request, res: Response) {
   }
 }
 
-export async function fetch_procedures(req: Request, res: Response){
+export async function fetch_procedures(req: Request, res: Response) {
   try {
     const authHeader =
       typeof req.headers.authorization === "string"
@@ -71,7 +71,7 @@ export async function fetch_procedures(req: Request, res: Response){
   }
 }
 
-export async function create_request(req: Request, res: Response){
+export async function create_request(req: Request, res: Response) {
   try {
     const authHeader =
       typeof req.headers.authorization === "string"
@@ -120,6 +120,28 @@ export async function get_role_tags(req: Request, res: Response) {
     });
   } catch (err) {
     console.error("Signup controller error:", err);
+
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+}
+
+export async function save_fcm_token(req: Request, res: Response) {
+  try {
+    const result = await CommonService.saveFCMToken({
+      user: req.user,
+      body: req.body,
+    });
+
+    return res.status(result.statusCode).json({
+      success: result.success,
+      message: result.message,
+      data: result.data ?? null,
+    });
+  } catch (err) {
+    console.error("save_fcm_token controller error:", err);
 
     return res.status(500).json({
       success: false,
