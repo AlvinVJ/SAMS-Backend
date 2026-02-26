@@ -934,6 +934,10 @@ export async function createUserService(payload: {
   try {
     const { mits_uid, name, email, user_type_tag = "FACULTY", role_ids, profileData } = payload;
 
+    const normalizedType = (user_type_tag || "FACULTY").toUpperCase();
+    const shouldWhitelist = normalizedType !== "STUDENT";
+    const whitelistRole: "faculty" | "admin" = normalizedType === "ADMIN" ? "admin" : "faculty";
+
     // 1. Validation
     const existing = await prisma.userAccount.findUnique({
       where: { mits_uid },
@@ -1041,6 +1045,21 @@ export async function createUserService(payload: {
         }
       }
     });
+
+    if (shouldWhitelist) {
+      const emailPrefix = email ? email.split("@")[0] : mits_uid;
+      await firestore
+        .collection("userDetails")
+        .doc(emailPrefix!)
+        .set(
+          {
+            role: whitelistRole,
+            uid: emailPrefix,
+            email: email ?? null,
+          },
+          { merge: true }
+        );
+    }
 
     return {
       success: true,
@@ -1348,6 +1367,12 @@ export async function bulkImportUsersService(payload: {
 }): Promise<Result> {
   const newlyCreatedFirebaseUids: string[] = [];
   let rowNum = 2; // Assuming header is line 1
+  const whitelistEntries: Array<{
+    docId: string;
+    role: "faculty" | "admin";
+    uid: string;
+    email: string | null;
+  }> = [];
 
   try {
     const userTypes = await prisma.userTypes.findMany();
@@ -1403,6 +1428,14 @@ export async function bulkImportUsersService(payload: {
         const type = userTypes.find(t => t.user_type_tag === user_type_tag.toUpperCase());
         if (!type) throw new Error(`Error at line ${rowNum}: Invalid user type: ${user_type_tag}`);
 
+        const normalizedType = user_type_tag.toUpperCase();
+        const shouldWhitelist = normalizedType !== "STUDENT";
+        if (shouldWhitelist) {
+          const docId = email ? email.split("@")[0] : mits_uid;
+          const role: "faculty" | "admin" = normalizedType === "ADMIN" ? "admin" : "faculty";
+          whitelistEntries.push({ docId, role, uid: auth_uid, email: email ?? null });
+        }
+
         // 3. Create UserAccount
         await tx.userAccount.create({
           data: { mits_uid, auth_uid, email, user_type: type.user_type_id },
@@ -1452,6 +1485,34 @@ export async function bulkImportUsersService(payload: {
         rowNum++;
       }
     });
+
+    const whitelistFailures: string[] = [];
+    for (const entry of whitelistEntries) {
+      try {
+        await firestore
+          .collection("userDetails")
+          .doc(entry.docId)
+          .set(
+            {
+              role: entry.role,
+              uid: entry.uid,
+              email: entry.email,
+            },
+            { merge: true }
+          );
+      } catch (err) {
+        console.error(`Failed to update userDetails for ${entry.docId}:`, err);
+        whitelistFailures.push(entry.docId);
+      }
+    }
+
+    if (whitelistFailures.length > 0) {
+      return {
+        success: false,
+        statusCode: 500,
+        message: `Users imported, but failed to update whitelist for: ${whitelistFailures.join(", ")}`,
+      };
+    }
 
     return {
       success: true,
