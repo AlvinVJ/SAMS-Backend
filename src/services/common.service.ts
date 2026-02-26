@@ -696,8 +696,8 @@ export async function deleteFCMToken(payload: BasicPayload): Promise<BasicResult
     // Delete the token for this specific session/device
     await prisma.fCMTokens.deleteMany({
       where: {
-        mits_uid,
-        session_id,
+        mits_uid: mits_uid,
+        session_id: session_id,
       },
     });
 
