@@ -679,3 +679,39 @@ export async function saveFCMToken(payload: BasicPayload): Promise<BasicResult> 
     };
   }
 }
+
+export async function deleteFCMToken(payload: BasicPayload): Promise<BasicResult> {
+  try {
+    const { mits_uid } = payload.user;
+    const { session_id } = payload.body;
+
+    if (!session_id) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "session_id is required",
+      };
+    }
+
+    // Delete the token for this specific session/device
+    await prisma.fCMTokens.deleteMany({
+      where: {
+        mits_uid,
+        session_id,
+      },
+    });
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "FCM token deleted successfully",
+    };
+  } catch (error) {
+    console.error("deleteFCMToken service error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
+}
