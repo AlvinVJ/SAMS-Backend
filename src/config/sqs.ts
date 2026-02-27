@@ -13,8 +13,8 @@ export const sqsClient = new SQSClient({
 // 2. Define your SQS Queue URLs
 // You will need to create these SQS queues in your AWS Console and paste their URLs here (or in .env)
 export const SQS_QUEUES = {
-    IMPORTANT: process.env.SQS_IMPORTANT_QUEUE_URL || "https://sqs.us-east-1.amazonaws.com/123456789012/important_queue",
-    PUSH: process.env.SQS_PUSH_QUEUE_URL || "https://sqs.us-east-1.amazonaws.com/123456789012/push_queue",
+    IMPORTANT: process.env.SQS_IMPORTANT_QUEUE_URL,
+    PUSH: process.env.SQS_PUSH_QUEUE_URL,
 };
 
 // 3. Helper: Send message to an SQS Queue
