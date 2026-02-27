@@ -6,7 +6,10 @@ import { prisma } from "../../db/prisma.js";
 /**
  * AWS Lambda Handler for SQS "Push" Queue
  */
-export const handler = async (event: any) => {
+export const handler = async (event: any, context: any) => {
+    // Freeze the Lambda instantly upon return (don't wait for Prisma/Firebase sockets to close)
+    context.callbackWaitsForEmptyEventLoop = false;
+
     console.log("🚀 Lambda invoked for PUSH Queue");
 
     for (const record of event.Records) {
