@@ -1,5 +1,5 @@
 import { prisma } from "../db/prisma.js";
-import { firestore } from "../config/firebase.js";
+import admin, { firestore } from "../config/firebase.js";
 
 interface Result {
   success: boolean;
@@ -25,6 +25,7 @@ export async function getUserNameFromUid(uid: string): Promise<string> {
 export async function resolveRequestStatus(req: any, procData: any, currentLevel: number): Promise<{ text: string, color: string }> {
   if (req.status === 1) return { text: "Approved", color: "success" };
   if (req.status === 2) return { text: "Rejected", color: "error" };
+  if (req.status === 3) return { text: "Withdrawn", color: "withdrawn" };
 
   const activeLevel = procData?.approvalLevels?.find((l: any) => l.level === currentLevel);
   const roleName = (activeLevel?.role || activeLevel?.roleIds?.[0] || "Approver").replaceAll('_', ' ').toUpperCase();
@@ -288,95 +289,118 @@ export async function getMyRequests(user: any): Promise<Result> {
     const formatted = [];
 
     for (const req of requests) {
-      let current_level = 1;
-      let total_levels = 1;
-      let approvalHistory: any[] = [];
-      let status_text = "Pending";
-      let color = "warning";
+      const userData = await prisma.userAccount.findUnique({
+        where: { mits_uid: req.created_by },
+        include: { Student: { include: { Classes: { include: { Departments: true } } } } }
+      });
 
-      const snap = await firestore.collection("requests").doc(req.req_id).get();
-      if (snap.exists) {
-        const data = snap.data()!;
-        current_level = data.current_level || 1;
-
-        const procDoc = await firestore.collection("procedures").doc(req.proc_id).get();
-        const procData = procDoc.exists ? procDoc.data() : null;
-        total_levels = procData?.approvalLevels?.length || 1;
-
-        const statusResult = await resolveRequestStatus(req, procData, current_level);
-        status_text = statusResult.text;
-        color = statusResult.color;
-
-        const historyBlocks = (data.approval_progress || []);
-        for (const block of historyBlocks) {
-          const levelDefHistory = procData?.approvalLevels?.find((l: any) => l.level === block.level);
-          const fallbackRole = levelDefHistory?.role || levelDefHistory?.roleIds?.[0] || "Approver";
-          for (const decision of block.decisions) {
-            if (decision.decision) {
-              const histEntry = {
-                level: block.level,
-                approverName: await getUserNameFromUid(decision.mits_uid),
-                role: (decision.role || block.role || fallbackRole).replaceAll('_', ' ').toUpperCase(),
-                status: decision.decision,
-                comments: decision.comments,
-                timestamp: decision.timestamp ? decision.timestamp.split('T')[0] : ""
-              };
-              console.log(`[DEBUG] History entry for ${req.req_id} level ${block.level}:`, histEntry);
-              approvalHistory.push(histEntry);
-            }
-          }
-        }
-        const userData = await prisma.userAccount.findUnique({
-          where: { mits_uid: req.created_by },
-          include: { Student: { include: { Classes: { include: { Departments: true } } } } }
-        });
-
-        const lastLevel = (procData as any)?.approvalLevels?.length > 0
-          ? (procData as any).approvalLevels[(procData as any).approvalLevels.length - 1]
-          : null;
-        const lastLevelRoleTag = lastLevel?.role || lastLevel?.roleIds?.[0] || "Approver";
-
-        // Enrich student lists for the student view too
-        const sourceData = data.formData || data.form_response;
-        let students = null;
-        if (sourceData) {
-          data.formData = await enrichStudentListInFormData(sourceData, procData);
-
-          // Expose student list at top level if found in formData
-          const studentListKey = Object.keys(data.formData).find(k => Array.isArray(data.formData[k]) && data.formData[k].length > 0 && data.formData[k][0].mits_uid);
-          if (studentListKey) {
-            students = data.formData[studentListKey];
-          }
-        }
-
-        formatted.push({
-          req_id: req.req_id,
-          procedure_title: req.Procedures?.title || "Unknown Request",
-          created_at: req.created_at,
-          status: req.status,
-          status_text,
-          color,
-          current_level,
-          total_levels,
-          approvalHistory,
-          formData: data.formData || {},
-          students: students,
-          isBulk: students !== null,
-          studentName: userData?.Student?.name || data.studentName || "Unknown",
-          studentId: req.created_by,
-          department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
-          lastLevelRoleTag,
-        });
-        console.log(`[DEBUG] Final formatted request ${req.req_id}:`, {
-          status: status_text,
-          historyCount: approvalHistory.length
-        });
-      }
+      formatted.push({
+        req_id: req.req_id,
+        procedure_title: req.Procedures?.title || "Unknown Request",
+        created_at: req.created_at,
+        status: req.status,
+        status_text: req.status === 1 ? "Approved" : (req.status === 2 ? "Rejected" : (req.status === 3 ? "Withdrawn" : "Pending")),
+        color: req.status === 1 ? "success" : (req.status === 2 ? "error" : (req.status === 3 ? "withdrawn" : "warning")),
+        studentName: userData?.Student?.name || "Unknown",
+        studentId: req.created_by,
+        department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
+        is_resolved: false,
+      });
     }
 
     return { success: true, statusCode: 200, message: "Requests fetched", data: formatted };
   } catch (error) {
     console.error("getMyRequests error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+
+export async function getRequestDetails(requestId: string): Promise<Result> {
+  try {
+    const req = await prisma.requests.findUnique({
+      where: { req_id: requestId },
+      include: { Procedures: true },
+    });
+
+    if (!req) return { success: false, statusCode: 404, message: "Request not found" };
+
+    const snap = await firestore.collection("requests").doc(requestId).get();
+    if (!snap.exists) return { success: false, statusCode: 404, message: "Request detail not found in Firestore" };
+
+    const data = snap.data()!;
+    const procDoc = await firestore.collection("procedures").doc(req.proc_id).get();
+    const procData = procDoc.exists ? procDoc.data() : null;
+
+    const current_level = data.current_level || 1;
+    const total_levels = procData?.approvalLevels?.length || 1;
+
+    const { text: status_text, color } = await resolveRequestStatus(req, procData, current_level);
+
+    const approvalHistory = [];
+    const historyBlocks = (data.approval_progress || []);
+    for (const block of historyBlocks) {
+      const levelDefHistory = procData?.approvalLevels?.find((l: any) => l.level === block.level);
+      const fallbackRole = levelDefHistory?.role || levelDefHistory?.roleIds?.[0] || "Approver";
+      for (const decision of block.decisions) {
+        if (decision.decision) {
+          approvalHistory.push({
+            level: block.level,
+            approverName: await getUserNameFromUid(decision.mits_uid),
+            role: (decision.role || block.role || fallbackRole).replaceAll('_', ' ').toUpperCase(),
+            status: decision.decision,
+            comments: decision.comments,
+            timestamp: decision.timestamp ? decision.timestamp.split('T')[0] : ""
+          });
+        }
+      }
+    }
+
+    const userData = await prisma.userAccount.findUnique({
+      where: { mits_uid: req.created_by },
+      include: { Student: { include: { Classes: { include: { Departments: true } } } } }
+    });
+
+    const lastLevel = (procData as any)?.approvalLevels?.length > 0
+      ? (procData as any).approvalLevels[(procData as any).approvalLevels.length - 1]
+      : null;
+    const lastLevelRoleTag = lastLevel?.role || lastLevel?.roleIds?.[0] || "Approver";
+
+    const sourceData = data.formData || data.form_response;
+    let students = null;
+    if (sourceData) {
+      data.formData = await enrichStudentListInFormData(sourceData, procData);
+      const studentListKey = Object.keys(data.formData).find(k => Array.isArray(data.formData[k]) && data.formData[k].length > 0 && data.formData[k][0].mits_uid);
+      if (studentListKey) {
+        students = data.formData[studentListKey];
+      }
+    }
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Request details resolved",
+      data: {
+        req_id: req.req_id,
+        procedure_title: req.Procedures?.title || "Unknown Request",
+        created_at: req.created_at,
+        status: req.status,
+        status_text,
+        color,
+        current_level,
+        total_levels,
+        approvalHistory,
+        formData: data.formData || {},
+        students: students,
+        isBulk: students !== null,
+        studentName: userData?.Student?.name || data.studentName || "Unknown",
+        studentId: req.created_by,
+        department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
+        lastLevelRoleTag,
+        is_resolved: true,
+      }
+    };
+  } catch (error) {
+    console.error("getRequestDetails error:", error);
     return { success: false, statusCode: 500, message: "Internal server error" };
   }
 }
@@ -442,3 +466,73 @@ export async function getStudentDashboardData(user: any): Promise<Result> {
   }
 }
 
+export async function withdrawRequest(requestId: string, user: any): Promise<Result> {
+  try {
+    const userAccount = await prisma.userAccount.findUnique({ where: { auth_uid: user.uid } });
+    if (!userAccount) return { success: false, statusCode: 404, message: "User not found" };
+
+    const request = await prisma.requests.findUnique({
+      where: { req_id: requestId }
+    });
+
+    if (!request) return { success: false, statusCode: 404, message: "Request not found" };
+    if (request.created_by !== userAccount.mits_uid) {
+      return { success: false, statusCode: 403, message: "Not authorized to withdraw this request" };
+    }
+    if (request.status !== 0) {
+      return { success: false, statusCode: 400, message: "Only pending requests can be withdrawn" };
+    }
+
+    // 1. Get current approvers to decrement analytics
+    const pendingApprovals = await prisma.toApprove.findMany({
+      where: { req_id: requestId }
+    });
+
+    for (const app of pendingApprovals) {
+      try {
+        if (app.approvalType) {
+          const roleRow = await prisma.roles.findFirst({
+            where: { role_tag: { equals: app.approvalType, mode: 'insensitive' } }
+          });
+          if (roleRow) {
+            await prisma.analytics.update({
+              where: { mits_uid_role_id: { mits_uid: app.approverUID, role_id: roleRow.role_id } },
+              data: { pending: { decrement: 1 } }
+            }).catch(() => { }); // Ignore if record doesn't exist
+          }
+        }
+      } catch (e) {
+        console.error("Failed to decrement analytics during withdrawal:", e);
+      }
+    }
+
+    // 2. Delete action items
+    await prisma.toApprove.deleteMany({
+      where: { req_id: requestId }
+    });
+
+    // 3. Update SQL status
+    await prisma.requests.update({
+      where: { req_id: requestId },
+      data: { status: 3 }
+    });
+
+    // 4. Update Firestore status
+    const nowISO = new Date().toISOString();
+    await firestore.collection("requests").doc(requestId).update({
+      status: "WITHDRAWN",
+      updatedAt: nowISO,
+      last_updated_at: nowISO,
+      timeline: admin.firestore.FieldValue.arrayUnion({
+        action: "WITHDRAWN",
+        by: "STUDENT",
+        timestamp: nowISO
+      })
+    });
+
+    return { success: true, statusCode: 200, message: "Request withdrawn successfully" };
+  } catch (error: any) {
+    console.error("withdrawRequest error:", error);
+    return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
