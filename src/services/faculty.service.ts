@@ -51,7 +51,7 @@ export async function getRequestsToApproveService(payload: any) {
     if (!selectedRole) {
       return { success: false, statusCode: 400, message: "Role parameter is required" };
     }
-
+    
     const approvals = await prisma.toApprove.findMany({
       where: {
         approverUID: normalizedFacultyUid,
@@ -219,11 +219,11 @@ export async function approveRequestService(payload: any): Promise<Result> {
           req_id: requestId,
           approverUID: nextApproverUid,
           approvalLevel: nextLevelNum,
-          approvalType: "Ad-hoc (Forwarded)"
+          approvalType: "General"
         },
         update: {
           approvalLevel: nextLevelNum,
-          approvalType: "Ad-hoc (Forwarded)"
+          approvalType: "General"
         }
       });
     } else {
