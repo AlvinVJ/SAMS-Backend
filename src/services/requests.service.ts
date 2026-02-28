@@ -32,6 +32,17 @@ export async function resolveRequestStatus(req: any, procData: any, currentLevel
   return { text: `Pending ${roleName}`, color: "warning" };
 }
 
+// Helper: Get robust last level role tag
+export function getLastLevelRoleTag(procData: any): string {
+  if (!procData?.approvalLevels || procData.approvalLevels.length === 0) return "Principal";
+
+  // Sort by level descending to find the actual last level by number
+  const levels = [...procData.approvalLevels].sort((a: any, b: any) => b.level - a.level);
+  const lastLevel = levels[0];
+
+  return lastLevel?.role || lastLevel?.roleIds?.[0] || "Principal";
+}
+
 // Helper: Resolve Approvers
 async function resolveApproversForRole(roleTag: string, requesterUid: string): Promise<string[]> {
   const normalizedTag = roleTag.toLowerCase();
@@ -265,6 +276,7 @@ export async function createRequest(payload: { body: any; user: any }): Promise<
       updatedAt: nowISO,
       last_updated_at: nowISO,
       formData: formData,
+      lastLevelRoleTag: getLastLevelRoleTag(procDoc.data()),
       timeline: [{ action: "SUBMITTED", by: studentName, role: "STUDENT", timestamp: nowISO }],
       approval_progress: approval_progress
     });
@@ -304,6 +316,7 @@ export async function getMyRequests(user: any): Promise<Result> {
         studentName: userData?.Student?.name || "Unknown",
         studentId: req.created_by,
         department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
+        lastLevelRoleTag: req.lastLevelRoleTag || "Principal", // Will be null if older request, so fallback
         is_resolved: false,
       });
     }
@@ -360,10 +373,7 @@ export async function getRequestDetails(requestId: string): Promise<Result> {
       include: { Student: { include: { Classes: { include: { Departments: true } } } } }
     });
 
-    const lastLevel = (procData as any)?.approvalLevels?.length > 0
-      ? (procData as any).approvalLevels[(procData as any).approvalLevels.length - 1]
-      : null;
-    const lastLevelRoleTag = lastLevel?.role || lastLevel?.roleIds?.[0] || "Approver";
+    const lastLevelRoleTag = data.lastLevelRoleTag || getLastLevelRoleTag(procData);
 
     const sourceData = data.formData || data.form_response;
     let students = null;
@@ -536,3 +546,4 @@ export async function withdrawRequest(requestId: string, user: any): Promise<Res
     return { success: false, statusCode: 500, message: "Internal server error" };
   }
 }
+
