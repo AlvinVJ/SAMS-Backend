@@ -1364,8 +1364,8 @@ export async function bulkImportAcademicService(payload: {
 
 export async function bulkImportUsersService(payload: {
   users: any[];
+  defaultUserType?: string;
 }): Promise<Result> {
-  const newlyCreatedFirebaseUids: string[] = [];
   let rowNum = 2; // Assuming header is line 1
   const whitelistEntries: Array<{
     docId: string;
@@ -1377,58 +1377,50 @@ export async function bulkImportUsersService(payload: {
   try {
     const userTypes = await prisma.userTypes.findMany();
     const roles = await prisma.roles.findMany();
+    const allBatches = await prisma.batches.findMany({ where: { is_active: true } });
+    const allClasses = await prisma.classes.findMany({ where: { is_active: true } });
+    const allDepartments = await prisma.departments.findMany({ where: { is_active: true } });
+
+    // Helper to get value by case-insensitive key
+    const getVal = (row: any, key: string) => {
+      const foundKey = Object.keys(row).find(k => k.toLowerCase().replace(/[\s_]/g, '') === key.toLowerCase().replace(/[\s_]/g, ''));
+      return foundKey ? row[foundKey] : undefined;
+    };
 
     await prisma.$transaction(async (tx) => {
       for (const data of payload.users) {
-        const { mits_uid, name, email, user_type_tag, ...profileData } = data;
+        const mits_uid = getVal(data, "mits_uid");
+        const name = getVal(data, "name");
+        const email = getVal(data, "email");
+        const profileData = data;
 
-        // 1. Strict Validation: Check for existing mits_uid or email in DB
-        const existingUserAccount = await tx.userAccount.findFirst({
-          where: {
-            OR: [
-              { mits_uid },
-              ...(email ? [{ email }] : [])
-            ]
-          }
-        });
-
-        if (existingUserAccount) {
-          if (existingUserAccount.mits_uid === mits_uid) {
-            throw new Error(`Error at line ${rowNum}: Duplicate MITS ID '${mits_uid}'`);
-          }
-          if (email && existingUserAccount.email === email) {
-            throw new Error(`Error at line ${rowNum}: Duplicate Email '${email}'`);
-          }
+        // Skip empty rows
+        if (!mits_uid && !name && !email) {
+          rowNum++;
+          continue;
         }
 
-        // 2. Create User in Firebase if email provided
-        let auth_uid = `temp_${mits_uid}`;
-        if (email) {
-          try {
-            const userRecord = await firebaseAuth.createUser({
-              email: email,
-              password: "ChangeMe123!", // Default password
-              displayName: name,
-            });
-            auth_uid = userRecord.uid;
-            newlyCreatedFirebaseUids.push(auth_uid);
-          } catch (fbError: any) {
-            if (fbError.code === 'auth/email-already-exists') {
-              const existingUser = await firebaseAuth.getUserByEmail(email);
-              auth_uid = existingUser.uid;
-              // If it already existed in Firebase but n
-              // ot in our DB, we don't add to newlyCreatedFirebaseUids
-              // as we shouldn't delete it if our transaction fails.
-            } else {
-              throw new Error(`Error at line ${rowNum} (Firebase): ${fbError.message}`);
-            }
-          }
-        }
+        if (!mits_uid) throw new Error(`Error at line ${rowNum}: MITS ID (mits_uid) is required. Headers received: ${Object.keys(data).join(", ")}`);
+
+        let user_type_tag = getVal(data, "user_type_tag") || payload.defaultUserType;
 
         const type = userTypes.find(t => t.user_type_tag === user_type_tag.toUpperCase());
         if (!type) throw new Error(`Error at line ${rowNum}: Invalid user type: ${user_type_tag}`);
 
         const normalizedType = user_type_tag.toUpperCase();
+
+        // 1. Determine auth_uid for Whitelist
+        let auth_uid = `temp_${mits_uid}`;
+        if (email) {
+          try {
+            const firebaseUser = await firebaseAuth.getUserByEmail(email);
+            auth_uid = firebaseUser.uid;
+          } catch (e) {
+            // User doesn't exist in Firebase yet
+          }
+        }
+
+        // 2. Prepare Whitelist Entry (Firestore)
         const shouldWhitelist = normalizedType !== "STUDENT";
         if (shouldWhitelist) {
           const docId = email ? email.split("@")[0] : mits_uid;
@@ -1436,37 +1428,77 @@ export async function bulkImportUsersService(payload: {
           whitelistEntries.push({ docId, role, uid: auth_uid, email: email ?? null });
         }
 
-        // 3. Create UserAccount
-        await tx.userAccount.create({
-          data: { mits_uid, auth_uid, email, user_type: type.user_type_id },
-        });
+        // 3. Create/Update Profile (Student or Faculty/Admin)
+        if (normalizedType === "STUDENT") {
+          const batchInput = profileData.batch_id || profileData.batch;
+          const classInput = profileData.class_id || profileData.class;
 
-        // 4. Create Student/Faculty profile
-        if (type.user_type_tag === "STUDENT") {
-          await tx.student.create({
-            data: {
+          // Resolve Batch
+          const batch = allBatches.find(b =>
+            b.batch_id === Number(batchInput) ||
+            b.batch.toLowerCase().trim() === String(batchInput).toLowerCase().trim()
+          );
+          if (!batch) throw new Error(`Error at line ${rowNum}: Batch "${batchInput}" not found.`);
+          const batch_id = batch.batch_id;
+
+          // Resolve Class
+          const cls = allClasses.find(c =>
+            c.batch_id === batch_id && (
+              c.class_id === Number(classInput) ||
+              c.class.toLowerCase().trim() === String(classInput).toLowerCase().trim()
+            )
+          );
+          if (!cls) throw new Error(`Error at line ${rowNum}: Class "${classInput}" not found for batch "${batch.batch}".`);
+          const class_id = cls.class_id;
+
+          await tx.student.upsert({
+            where: { mits_uid },
+            update: {
+              name,
+              batch_id,
+              class_id,
+              hosteller: String(profileData.hosteller).toLowerCase() === 'true',
+              gender: profileData.gender,
+              phone: profileData.phone,
+            },
+            create: {
               mits_uid,
               name,
-              batch_id: Number(profileData.batch_id),
-              class_id: Number(profileData.class_id),
-              hosteller: profileData.hosteller === 'true' || profileData.hosteller === true,
+              batch_id,
+              class_id,
+              hosteller: String(profileData.hosteller).toLowerCase() === 'true',
               gender: profileData.gender,
               phone: profileData.phone,
             },
           });
-        } else if (type.user_type_tag === "FACULTY") {
-          await tx.faculty.create({
-            data: {
+        } else if (normalizedType === "FACULTY" || normalizedType === "ADMIN") {
+          const deptInput = profileData.department_id || profileData.department;
+          const dept = allDepartments.find(d =>
+            d.dept_id === Number(deptInput) ||
+            d.dept_name.toLowerCase().trim() === String(deptInput).toLowerCase().trim()
+          );
+
+          if (!dept) throw new Error(`Error at line ${rowNum}: Department "${deptInput}" not found.`);
+          const department_id = dept.dept_id;
+
+          await tx.faculty.upsert({
+            where: { mits_uid },
+            update: {
+              name,
+              department_id,
+              email: email ?? null
+            },
+            create: {
               mits_uid,
               name,
-              department_id: Number(profileData.department_id),
+              department_id,
               email: email ?? null
             },
           });
         }
 
-        // 5. Handle Global Role Mapping if provided
-        if (profileData.role_tag || profileData.club_role_tag) {
+        // 4. Handle Global Role Mapping
+        if (normalizedType !== "FACULTY" && normalizedType !== "ADMIN" && (profileData.role_tag || profileData.club_role_tag)) {
           const desiredTag = (profileData.role_tag || profileData.club_role_tag).toUpperCase();
           const role = roles.find(r => r.role_tag === desiredTag);
           if (role) {
@@ -1484,8 +1516,9 @@ export async function bulkImportUsersService(payload: {
         }
         rowNum++;
       }
-    });
+    }, { timeout: 30000 });
 
+    // 5. Update Firestore Whitelist
     const whitelistFailures: string[] = [];
     for (const entry of whitelistEntries) {
       try {
@@ -1521,18 +1554,6 @@ export async function bulkImportUsersService(payload: {
     };
   } catch (error: any) {
     console.error("bulkImportUsersService error:", error);
-
-    // Rollback Firebase users
-    if (newlyCreatedFirebaseUids.length > 0) {
-      console.log(`Rolling back ${newlyCreatedFirebaseUids.length} Firebase users...`);
-      for (const uid of newlyCreatedFirebaseUids) {
-        try {
-          await firebaseAuth.deleteUser(uid);
-        } catch (delError) {
-          console.error(`Failed to delete Firebase user ${uid} during rollback:`, delError);
-        }
-      }
-    }
 
     return {
       success: false,
@@ -1821,8 +1842,8 @@ export async function assignClassRole(payload: {
 
 export async function removeClassRole(payload: {
   class_id: number,
-  mits_uid: string ,
-  role_tag: string 
+  mits_uid: string,
+  role_tag: string
 }): Promise<Result> {
   try {
     await prisma.classFaculty.update({
@@ -1842,5 +1863,198 @@ export async function removeClassRole(payload: {
   } catch (error) {
     console.error("removeClassRole error:", error);
     return { success: false, statusCode: 500, message: "Internal server error" };
+  }
+}
+export async function bulkImportClubsService(payload: {
+  clubs: any[];
+}): Promise<Result> {
+  try {
+    const roles = await prisma.roles.findMany();
+    const departments = await prisma.departments.findMany();
+    const allBatches = await prisma.batches.findMany(); // Added for academic data context
+
+    // Helper to get value by case-insensitive key
+    const getVal = (row: any, key: string) => {
+      const foundKey = Object.keys(row).find(k => k.toLowerCase().replace(/[\s_]/g, '') === key.toLowerCase().replace(/[\s_]/g, ''));
+      return foundKey ? row[foundKey] : undefined;
+    };
+
+    await prisma.$transaction(async (tx) => {
+      // Get current max IDs since they aren't autoincrementing in some schemas
+      const maxClub = await tx.clubs.aggregate({ _max: { club_id: true } });
+      let nextClubId = (maxClub._max.club_id || 0) + 1;
+
+      const maxClubAdmin = await tx.clubAdmin.aggregate({ _max: { club_admin_id: true } });
+      let nextClubAdminId = (maxClubAdmin._max.club_admin_id || 0) + 1;
+
+      const maxRoleMapping = await tx.roleMapping.aggregate({ _max: { role_mapping_id: true } });
+      let nextRoleMappingId = (maxRoleMapping._max.role_mapping_id || 0) + 1;
+
+      // Helper to resolve name to UID within the transaction
+      const resolveUserUid = async (input: string | undefined): Promise<string | undefined> => {
+        if (!input) return undefined;
+        const normalizedInput = input.trim();
+
+        // 1. Check if it's already a mits_uid (exists in UserAccount) - Case Insensitive
+        const user = await tx.userAccount.findFirst({
+          where: { mits_uid: { equals: normalizedInput, mode: 'insensitive' } }
+        });
+        if (user) return user.mits_uid;
+
+        // 2. Search in Student by mits_uid or name - Case Insensitive
+        const student = await tx.student.findFirst({
+          where: {
+            OR: [
+              { mits_uid: { equals: normalizedInput, mode: 'insensitive' } },
+              { name: { contains: normalizedInput, mode: 'insensitive' } }
+            ]
+          }
+        });
+        if (student) return student.mits_uid;
+
+        // 3. Search in Faculty by mits_uid or name - Case Insensitive
+        const faculty = await tx.faculty.findFirst({
+          where: {
+            OR: [
+              { mits_uid: { equals: normalizedInput, mode: 'insensitive' } },
+              { name: { contains: normalizedInput, mode: 'insensitive' } }
+            ]
+          }
+        });
+        if (faculty) return faculty.mits_uid;
+
+        return normalizedInput; // Fallback to trimmed input
+      };
+
+      let rowNum = 2; // Header is line 1
+
+      // Helper to get value by more flexible case-insensitive key
+      const getVal = (row: any, target: string) => {
+        const normalizedTarget = target.toLowerCase().replace(/[\s_]/g, '');
+        const foundKey = Object.keys(row).find(k => {
+          const normalizedK = k.toLowerCase().replace(/[\s_]/g, '');
+          return normalizedK === normalizedTarget ||
+            normalizedK.includes(normalizedTarget) ||
+            normalizedTarget.includes(normalizedK);
+        });
+        return foundKey ? row[foundKey] : undefined;
+      };
+
+      for (const row of payload.clubs) {
+        const club_name = getVal(row, "clubname") || getVal(row, "name");
+        const club_department = getVal(row, "clubdepartment") || getVal(row, "department");
+        const club_lead = getVal(row, "clublead") || getVal(row, "lead") || getVal(row, "leadid");
+        const club_coordinator = getVal(row, "clubcoordinator") || getVal(row, "coordinator") || getVal(row, "coordinatorid");
+
+        // Skip empty rows
+        if (!club_name && !club_lead && !club_coordinator && !club_department) {
+          rowNum++;
+          continue;
+        }
+
+        if (!club_name) throw new Error(`Error at line ${rowNum}: Club name is required. Headers received: ${Object.keys(row).join(", ")}`);
+
+        // 1. Resolve Department
+        const dept = departments.find(d => d.dept_name.toLowerCase() === club_department?.toLowerCase());
+        const dept_id = dept ? dept.dept_id : null;
+
+        // 2. Resolve Lead and Coordinator UIDs
+        const leadUid = await resolveUserUid(club_lead);
+        const coordUid = await resolveUserUid(club_coordinator);
+
+        console.log(`Row ${rowNum}: club_name=${club_name}, club_lead=${club_lead} -> leadUid=${leadUid}, club_coordinator=${club_coordinator} -> coordUid=${coordUid}`);
+
+        // 3. Generate/Ensure Role Tags
+        const sanitizedName = club_name.toUpperCase().replace(/\s+/g, "_").replace(/[^A-Z0-9_]/g, "");
+        const leadTag = `CLUB_LEAD_${sanitizedName}`;
+        const coordTag = `CLUB_COORD_${sanitizedName}`;
+
+        // Ensure Lead Role
+        let leadRole = roles.find(r => r.role_tag === leadTag);
+        if (!leadRole) {
+          leadRole = await tx.roles.create({
+            data: { role_tag: leadTag, role_desc: `Lead of ${club_name}`, is_active: true }
+          });
+        }
+
+        // Ensure Coordinator Role
+        let coordRole = roles.find(r => r.role_tag === coordTag);
+        if (!coordRole) {
+          coordRole = await tx.roles.create({
+            data: { role_tag: coordTag, role_desc: `Coordinator of ${club_name}`, is_active: true }
+          });
+        }
+
+        // 4. Create Club
+        await tx.clubs.create({
+          data: {
+            club_id: nextClubId,
+            club_name: club_name,
+            dept_id: dept_id,
+            coordinator_role_tag: coordTag,
+            is_active: true
+          }
+        });
+
+        // 5. Link Lead in ClubAdmin
+        await tx.clubAdmin.create({
+          data: {
+            club_admin_id: nextClubAdminId++,
+            club_id: nextClubId++,
+            role_tag: leadTag,
+            is_active: true
+          }
+        });
+
+        // 6. Create Role Mappings for specific users (if resolved)
+        if (leadUid) {
+          await tx.roleMapping.upsert({
+            where: { role_mapping_id: nextRoleMappingId },
+            create: {
+              role_mapping_id: nextRoleMappingId++,
+              role_id: leadRole.role_id,
+              mits_uid: leadUid,
+              is_active: true
+            },
+            update: {
+              role_id: leadRole.role_id,
+              is_active: true,
+              deleted_at: null
+            }
+          });
+        }
+
+        if (coordUid) {
+          await tx.roleMapping.upsert({
+            where: { role_mapping_id: nextRoleMappingId },
+            create: {
+              role_mapping_id: nextRoleMappingId++,
+              role_id: coordRole.role_id,
+              mits_uid: coordUid,
+              is_active: true
+            },
+            update: {
+              role_id: coordRole.role_id,
+              is_active: true,
+              deleted_at: null
+            }
+          });
+        }
+        rowNum++;
+      }
+    });
+
+    return {
+      success: true,
+      statusCode: 201,
+      message: "Clubs imported successfully",
+    };
+  } catch (error: any) {
+    console.error("bulkImportClubsService error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: error.message || "Internal server error"
+    };
   }
 }

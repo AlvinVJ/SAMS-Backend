@@ -240,29 +240,39 @@ export async function signup(payload: BasicPayload): Promise<BasicResult> {
     });
 
     if (!existingUser) {
-      console.log("Creating new UserAccount for:", emailPrefix);
-      let userType: number | null;
-      let role = payload.user.role;
+      console.log("Checking for pre-imported profile for:", emailPrefix);
 
-      if (role === "admin") userType = 2;
-      else if (role === "faculty") userType = 1;
-      else if (role === "student") userType = 0; // student
-      else userType = null;
+      // Look for profile in Student or Faculty tables
+      const studentProfile = await prisma.student.findUnique({ where: { mits_uid: emailPrefix } });
+      const facultyProfile = await prisma.faculty.findUnique({ where: { mits_uid: emailPrefix } });
 
-
-      if (userType == null) {
+      if (!studentProfile && !facultyProfile) {
         return {
           success: false,
           statusCode: 403,
-          message: "invalid credentials initialized in whitelist table",
+          message: "User not found in system. Please contact administrator.",
         };
       }
+
+      // Determine user type ID based on profile and Firestore role
+      const userTypeTag = isStudent ? "STUDENT" : (role === "admin" ? "ADMIN" : "FACULTY");
+      const userType = await prisma.userTypes.findUnique({ where: { user_type_tag: userTypeTag } });
+
+      if (!userType) {
+        return {
+          success: false,
+          statusCode: 500,
+          message: "User type configuration error",
+        };
+      }
+
+      console.log("Creating new UserAccount for:", emailPrefix);
       await prisma.userAccount.create({
         data: {
           auth_uid: payload.user.uid,
           mits_uid: emailPrefix,
           email: payload.user.email,
-          user_type: userType
+          user_type: userType.user_type_id
         },
       });
       return {
@@ -278,11 +288,15 @@ export async function signup(payload: BasicPayload): Promise<BasicResult> {
     }
     else {
       console.log("Existing user found. Current email:", existingUser.email, "New email:", payload.user.email);
-      if (existingUser.email !== payload.user.email) {
-        console.log("Updating email for user:", emailPrefix);
+      // Link Google UID / update email if it was a temp pre-import account or email changed
+      if (existingUser.email !== payload.user.email || existingUser.auth_uid !== payload.user.uid) {
+        console.log("Updating account for user:", emailPrefix);
         await prisma.userAccount.update({
           where: { mits_uid: emailPrefix },
-          data: { email: payload.user.email },
+          data: {
+            email: payload.user.email,
+            auth_uid: payload.user.uid
+          },
         });
       }
       return {

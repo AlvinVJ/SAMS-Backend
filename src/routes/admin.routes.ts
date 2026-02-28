@@ -26,6 +26,9 @@ import {
   getAdminDashboardStats,
   bulkImportAcademic,
   bulkImportUsers,
+  bulkImportStudents,
+  bulkImportFaculty,
+  bulkImportClubs,
   bulkImportPlacementAttendance,
   getDepartmentFacultyRoles,
   assignDepartmentRole,
@@ -89,6 +92,9 @@ adminRouter.get("/dashboard-stats", getAdminDashboardStats);
 // Bulk Import
 adminRouter.post("/bulk-import-academic", upload.single("file"), bulkImportAcademic);
 adminRouter.post("/bulk-import-users", upload.single("file"), bulkImportUsers);
+adminRouter.post("/bulk-import-students", upload.single("file"), bulkImportStudents);
+adminRouter.post("/bulk-import-faculty", upload.single("file"), bulkImportFaculty);
+adminRouter.post("/bulk-import-clubs", upload.single("file"), bulkImportClubs);
 
 // Department Faculty
 adminRouter.get("/department/:id/faculty-roles", getDepartmentFacultyRoles);
