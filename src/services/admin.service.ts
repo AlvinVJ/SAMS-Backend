@@ -299,8 +299,8 @@ export async function getProcedureById(payload: {
           formFields: firestoreData?.formFields || [],
           approvalLevels: firestoreData?.approvalLevels || [],
           visibility: visibility,
-          isHosteller: firestoreData?.is_hosteller || firestoreData?.isHosteller || false,
-          systemHook: firestoreData?.system_hook || null,
+          is_hosteller: firestoreData?.is_hosteller || firestoreData?.isHosteller || false,
+          system_hook: firestoreData?.system_hook || firestoreData?.systemHook || null,
         },
       },
     };
@@ -323,7 +323,7 @@ export async function updateProcedure(payload: {
 }): Promise<Result> {
   try {
     const { procedureId, body } = payload;
-    const { title, desc, formFields, approvalLevels, visibility, system_hook } = body.procedure;
+    const { title, desc, formFields, approvalLevels, visibility, system_hook, is_hosteller } = body.procedure;
 
     // Check if procedure exists
     const existingProcedure = await prisma.procedures.findUnique({
@@ -379,6 +379,7 @@ export async function updateProcedure(payload: {
         approvalLevels,
         visibility,
         system_hook,
+        is_hosteller: is_hosteller || false,
         is_active: true,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         previousVersionId: procedureId, // Optional: track history
