@@ -63,7 +63,7 @@ export async function getProcedureById(
     }
 
     const result = await AdminService.getProcedureById({
-      procedureId: id,
+      procedureId: id as string,
       user: req.user
     });
     return res.status(result.statusCode).json({
@@ -95,7 +95,7 @@ export async function updateProcedure(
     }
 
     const result = await AdminService.updateProcedure({
-      procedureId: id,
+      procedureId: id as string,
       body: req.body,
       user: req.user
     });
@@ -128,7 +128,7 @@ export async function deleteProcedure(
     }
 
     const result = await AdminService.deleteProcedure({
-      procedureId: id,
+      procedureId: id as string,
       user: req.user
     });
     return res.status(result.statusCode).json({
@@ -381,7 +381,7 @@ export async function assignDepartmentRole(req: Request, res: Response) {
   return res.status(result.statusCode).json(result);
 }
 
-export async function removeDepartmentRole(req: Request, res: Response) {
+export async function removeDepartmentRole(req: Request<{ mits_uid: string }>, res: Response) {
   const { mits_uid } = req.params;
   if (!mits_uid) {
     return res.status(400).json({ success: false, message: "mits_uid is required" });
@@ -400,7 +400,7 @@ export async function assignClassRole(req: Request, res: Response) {
   return res.status(result.statusCode).json(result);
 }
 
-export async function removeClassRole(req: Request, res: Response) {
+export async function removeClassRole(req: Request<{ class_id:string, mits_uid: string, role_tag: string}>, res: Response) {
   const { class_id, mits_uid, role_tag } = req.params;
   if (!class_id || !mits_uid || !role_tag) {
     return res.status(400).json({ success: false, message: "class_id, mits_uid, and role_tag are required" });
