@@ -303,7 +303,10 @@ export async function getMyRequests(user: any): Promise<Result> {
     for (const req of requests) {
       const userData = await prisma.userAccount.findUnique({
         where: { mits_uid: req.created_by },
-        include: { Student: { include: { Classes: { include: { Departments: true } } } } }
+        include: {
+          Student: { include: { Classes: { include: { Departments: true } } } },
+          Faculty: { include: { Departments: true } }
+        }
       });
 
       formatted.push({
@@ -313,10 +316,10 @@ export async function getMyRequests(user: any): Promise<Result> {
         status: req.status,
         status_text: req.status === 1 ? "Approved" : (req.status === 2 ? "Rejected" : (req.status === 3 ? "Withdrawn" : "Pending")),
         color: req.status === 1 ? "success" : (req.status === 2 ? "error" : (req.status === 3 ? "withdrawn" : "warning")),
-        studentName: userData?.Student?.name || "Unknown",
+        studentName: userData?.Student?.name || userData?.Faculty?.name || "Unknown",
         studentId: req.created_by,
-        department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
-        lastLevelRoleTag: req.lastLevelRoleTag || "Principal", // Will be null if older request, so fallback
+        department: userData?.Student?.Classes?.Departments?.dept_name || userData?.Faculty?.Departments?.dept_name || "N/A",
+        lastLevelRoleTag: (req as any).lastLevelRoleTag || "Principal",
         is_resolved: false,
       });
     }
@@ -489,7 +492,8 @@ export async function withdrawRequest(requestId: string, user: any): Promise<Res
     });
 
     if (!request) return { success: false, statusCode: 404, message: "Request not found" };
-    if (request.created_by !== userAccount.mits_uid) {
+    const emailPrefix = user.email.split("@")[0];
+    if (request.created_by !== userAccount.mits_uid && request.created_by !== emailPrefix) {
       return { success: false, statusCode: 403, message: "Not authorized to withdraw this request" };
     }
     if (request.status !== 0) {

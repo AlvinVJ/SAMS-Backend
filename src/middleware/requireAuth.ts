@@ -17,7 +17,7 @@ async function fetchRoleFromFirebase(uid: string): Promise<AppRole> {
 
   const role = doc.data()?.role;
 
-  if (role ==null) {
+  if (role == null) {
     throw new Error("Invalid role in userDetails");
   }
 
@@ -30,7 +30,7 @@ export async function requireAuth(
   next: NextFunction
 ) {
   const header = req.headers.authorization;
-  if(header==null){
+  if (header == null) {
     return res.status(401).json({ error: "Authorization header not found" });
 
   }
@@ -39,7 +39,7 @@ export async function requireAuth(
   }
 
   const token = header.split(" ")[1];
-  if(token==null){
+  if (token == null) {
     return res.status(401).json({ error: "Authorization header not found" });
   }
 
@@ -47,7 +47,7 @@ export async function requireAuth(
     const decoded = await firebaseAuth.verifyIdToken(token);
 
     const email = decoded.email;
-    if (email==null) {
+    if (email == null) {
       return res.status(403).json({ error: "Invalid user credentials" });
     }
 
@@ -56,8 +56,8 @@ export async function requireAuth(
 
     // 1️⃣ Student detection
     if (isStudentEmail(email)) {
-      role ="student";
-    } 
+      role = "student";
+    }
     // 2️⃣ Faculty / Admin from Firebase whitelist
     else {
       role = await fetchRoleFromFirebase(emailPrefix);
@@ -68,11 +68,26 @@ export async function requireAuth(
     // persist / fetch from DB instead of recomputing every time
     // const user = await prisma.userAccount.findFirst(...)
 
+    let mits_uid = emailPrefix;
+    let userAccount = await prisma.userAccount.findUnique({
+      where: { auth_uid: decoded.uid }
+    });
+
+    if (!userAccount && decoded.email) {
+      userAccount = await prisma.userAccount.findUnique({
+        where: { email: decoded.email }
+      });
+    }
+
+    if (userAccount) {
+      mits_uid = userAccount.mits_uid;
+    }
+
     req.user = {
       uid: decoded.uid,
       email: decoded.email,
       role,
-      mits_uid: emailPrefix
+      mits_uid: mits_uid
     };
 
     next();
