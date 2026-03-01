@@ -65,19 +65,56 @@ export async function getRequestsToApproveService(payload: any) {
         }
       }
     });
+    if (approvals.length === 0) {
+      return { success: true, statusCode: 200, message: "No pending requests found", data: { requests: [] } };
+    }
+
+    // 1. Batch fetch all Firestore Documents for performance (O(1) approach)
+    const reqIds = approvals.map(a => a.Requests.req_id);
+    const procIds = [...new Set(approvals.map(a => a.Requests.proc_id))];
+
+    const [requestSnaps, procedureSnaps] = await Promise.all([
+      firestore.getAll(...reqIds.map(id => firestore.collection("requests").doc(id))),
+      firestore.getAll(...procIds.map(id => firestore.collection("procedures").doc(id)))
+    ]);
+
+    const requestMap = new Map(requestSnaps.map(s => [s.id, s.exists ? s.data() : null]));
+    const procedureMap = new Map(procedureSnaps.map(s => [s.id, s.exists ? s.data() : null]));
+
+    // 2. Batch fetch Student/Faculty names for all UIDs involved (Requesters + Approvers in History)
+    const allUids = new Set<string>();
+    approvals.forEach(a => allUids.add(a.Requests.created_by));
+    requestSnaps.forEach(s => {
+      const d = s.data();
+      if (d?.approval_progress) {
+        d.approval_progress.forEach((p: any) => p.decisions?.forEach((dec: any) => allUids.add(dec.mits_uid)));
+      }
+    });
+
+    const [facultyNames, studentNames] = await Promise.all([
+      prisma.faculty.findMany({ where: { mits_uid: { in: [...allUids] } } }),
+      prisma.student.findMany({
+        where: { mits_uid: { in: [...allUids] } },
+        include: { Classes: { include: { Departments: true } } }
+      })
+    ]);
+
+    const nameMap = new Map<string, string>();
+    facultyNames.forEach(f => nameMap.set(f.mits_uid, f.name));
+    studentNames.forEach(s => nameMap.set(s.mits_uid, s.name));
+
+    const studentDataMap = new Map(studentNames.map(s => [s.mits_uid, s]));
 
     const approvableRequests: any[] = [];
 
     for (const app of approvals) {
       const req = app.Requests;
-      const snap = await firestore.collection("requests").doc(req.req_id).get();
-      if (!snap.exists) continue;
+      const data = requestMap.get(req.req_id);
+      const procedureDef = procedureMap.get(req.proc_id);
 
-      const data = snap.data()!;
+      if (!data) continue;
+
       const currentLevel = data.current_level;
-
-      const procDoc = await firestore.collection("procedures").doc(req.proc_id).get();
-      const procedureDef = procDoc.exists ? procDoc.data() : null;
 
       const approvalHistory: any[] = [];
       const historyBlocks = (data.approval_progress || []).filter((lvl: any) => lvl.level < currentLevel);
@@ -88,7 +125,7 @@ export async function getRequestsToApproveService(payload: any) {
           if (decision.decision) {
             approvalHistory.push({
               level: block.level,
-              approverName: await getUserNameFromUid(decision.mits_uid),
+              approverName: nameMap.get(decision.mits_uid) || "Unknown User",
               role: (decision.role || block.role || fallbackRole).replaceAll('_', ' ').toUpperCase(),
               status: decision.decision,
               comments: decision.comments,
@@ -111,10 +148,7 @@ export async function getRequestsToApproveService(payload: any) {
         }
       }
 
-      const student = await prisma.student.findUnique({
-        where: { mits_uid: req.created_by },
-        include: { Classes: { include: { Departments: true } } }
-      });
+      const student = studentDataMap.get(req.created_by);
 
       approvableRequests.push({
         id: req.req_id,
@@ -123,7 +157,15 @@ export async function getRequestsToApproveService(payload: any) {
         studentId: req.created_by,
         department: student?.Classes?.Departments?.dept_name || "N/A",
         date: req.created_at.toISOString().split("T")[0],
-        description: (data.formData) ? Object.entries(data.formData).filter(([k]) => k !== "DEBUG_SYNC").map(([k, v]) => `${k}: ${v}`).join(" | ") : "No description",
+        description: (data.formData)
+          ? Object.entries(data.formData)
+            .filter(([k]) => k !== "DEBUG_SYNC" && k !== "attachmentUrl" && k !== "attachmentPath" && k !== "attachmentName" && k !== "attachmentType")
+            .map(([k, v]: [string, any]) => {
+              if (v && typeof v === 'object' && v.name) return `${k}: ${v.name}`;
+              if (v && typeof v === 'object' && Array.isArray(v)) return `${k}: [List of ${v.length}]`;
+              return `${k}: ${v}`;
+            }).join(" | ")
+          : "No description",
         attachments: data.attachments || [],
         roleTag: app.approvalType || selectedRole,
         color: "blue",
@@ -403,7 +445,7 @@ export async function getActedRequestsService(user: any): Promise<Result> {
           include: { Classes: { include: { Departments: true } } }
         });
 
-        // Enrich student lists (names/genders)
+        // Enrich student lists (names/genders) - skip if needed
         const sourceData = data.formData || data.form_response;
         let students = null;
         if (sourceData) {
@@ -446,6 +488,15 @@ export async function getActedRequestsService(user: any): Promise<Result> {
           current_level: data.current_level || 1,
           total_levels,
           formData: data.formData || {},
+          description: (data.formData)
+            ? Object.entries(data.formData)
+              .filter(([k]) => k !== "DEBUG_SYNC" && k !== "attachmentUrl" && k !== "attachmentPath" && k !== "attachmentName" && k !== "attachmentType")
+              .map(([k, v]: [string, any]) => {
+                if (v && typeof v === 'object' && v.name) return `${k}: ${v.name}`;
+                if (v && typeof v === 'object' && Array.isArray(v)) return `${k}: [List of ${v.length}]`;
+                return `${k}: ${v}`;
+              }).join(" | ")
+            : "No description",
           students: students,
           isBulk: students !== null,
           studentName: student?.name || data.studentName || "Unknown",
