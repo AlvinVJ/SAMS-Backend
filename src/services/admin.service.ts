@@ -838,9 +838,12 @@ export async function updateUserService(payload: {
   email?: string;
   is_active?: boolean;
   role_ids?: number[]; // Updated to accept multiple role IDs
+  department_id?: number;
+  batch_id?: number;
+  class_id?: number;
 }): Promise<Result> {
   try {
-    const { mits_uid, name, email, is_active, role_ids } = payload;
+    const { mits_uid, name, email, is_active, role_ids, department_id, batch_id, class_id } = payload;
 
     const user = await prisma.userAccount.findUnique({
       where: { mits_uid },
@@ -871,6 +874,7 @@ export async function updateUserService(payload: {
             ...(name !== undefined && { name }),
             ...(email && { email }),
             ...(is_active !== undefined && { is_active }),
+            ...(department_id !== undefined && { department_id }),
           },
         });
       } else if (user.UserTypes.user_type_tag === "STUDENT") {
@@ -879,6 +883,8 @@ export async function updateUserService(payload: {
           data: {
             ...(name !== undefined && { name }),
             ...(is_active !== undefined && { is_active }),
+            ...(batch_id !== undefined && { batch_id }),
+            ...(class_id !== undefined && { class_id }),
           },
         });
       }
