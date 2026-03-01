@@ -2,6 +2,7 @@ import { prisma } from "../db/prisma.js";
 import admin from "../config/firebase.js";
 import { firebaseAuth, firestore } from "../config/firebase.js";
 import { processPlacementAttendance } from "./placement.service.js";
+import { processHostellerNotification } from "./hostel.service.js";
 import { publishApprovalAlert } from "../queues/producers/importantProducer.js";
 
 
@@ -241,29 +242,39 @@ export async function signup(payload: BasicPayload): Promise<BasicResult> {
     });
 
     if (!existingUser) {
-      console.log("Creating new UserAccount for:", emailPrefix);
-      let userType: number | null;
-      let role = payload.user.role;
+      console.log("Checking for pre-imported profile for:", emailPrefix);
 
-      if (role === "admin") userType = 2;
-      else if (role === "faculty") userType = 1;
-      else if (role === "student") userType = 0; // student
-      else userType = null;
+      // Look for profile in Student or Faculty tables
+      const studentProfile = await prisma.student.findUnique({ where: { mits_uid: emailPrefix } });
+      const facultyProfile = await prisma.faculty.findUnique({ where: { mits_uid: emailPrefix } });
 
-
-      if (userType == null) {
+      if (!studentProfile && !facultyProfile) {
         return {
           success: false,
           statusCode: 403,
-          message: "invalid credentials initialized in whitelist table",
+          message: "User not found in system. Please contact administrator.",
         };
       }
+
+      // Determine user type ID based on profile and Firestore role
+      const userTypeTag = isStudent ? "STUDENT" : (role === "admin" ? "ADMIN" : "FACULTY");
+      const userType = await prisma.userTypes.findUnique({ where: { user_type_tag: userTypeTag } });
+
+      if (!userType) {
+        return {
+          success: false,
+          statusCode: 500,
+          message: "User type configuration error",
+        };
+      }
+
+      console.log("Creating new UserAccount for:", emailPrefix);
       await prisma.userAccount.create({
         data: {
           auth_uid: payload.user.uid,
           mits_uid: emailPrefix,
           email: payload.user.email,
-          user_type: userType
+          user_type: userType.user_type_id
         },
       });
       return {
@@ -279,11 +290,15 @@ export async function signup(payload: BasicPayload): Promise<BasicResult> {
     }
     else {
       console.log("Existing user found. Current email:", existingUser.email, "New email:", payload.user.email);
-      if (existingUser.email !== payload.user.email) {
-        console.log("Updating email for user:", emailPrefix);
+      // Link Google UID / update email if it was a temp pre-import account or email changed
+      if (existingUser.email !== payload.user.email || existingUser.auth_uid !== payload.user.uid) {
+        console.log("Updating account for user:", emailPrefix);
         await prisma.userAccount.update({
           where: { mits_uid: emailPrefix },
-          data: { email: payload.user.email },
+          data: {
+            email: payload.user.email,
+            auth_uid: payload.user.uid
+          },
         });
       }
       return {
@@ -468,23 +483,34 @@ export async function create_request(
     }
 
     // ---------------------------------------------------------
-    // SYSTEM HOOK INTERCEPTION (Special Workflows)
+    // SYSTEM HOOK INTERCEPTION (Special Workflows - START)
     // ---------------------------------------------------------
     const procDoc = await firestore.collection("procedures").doc(procedureId).get();
     const procData = procDoc.data();
+    const hookData = formData.hook_data || formData.student_list || formData.uids || [];
+    console.log(`[SYSTEM_HOOK_START] Hook data to process:`, JSON.stringify(hookData).substring(0, 500), hookData.length > 0 ? "..." : "");
 
-    if (procData?.system_hook === "PLACEMENT_BULK") {
-      // Find the student list in formData (it could be named 'student_list' or something like 'upload_student_list_csv')
-      const studentListData = formData.student_list ||
-        formData.upload_student_list_csv ||
-        Object.entries(formData).find(([k]) => k.includes('student_list'))?.[1] || [];
-
+    if (procData?.system_hook === "PLACEMENT_BULK" && procData?.hook_trigger === "START") {
+      console.log(`[PLACEMENT_BULK_HOOK] Executing START trigger for ${procedureId}`);
       return await processPlacementAttendance({
-        procedureId: procedureId,
-        students: studentListData,
+        procedureId,
+        hookData: Array.isArray(hookData) ? hookData : [],
         coordinatorUid: mits_uid,
-        eventName: formData.event_name || formData.title || formData.event_name_ || Object.entries(formData).find(([k]) => k.includes('event_name'))?.[1] || "Placement Event",
-        date: formData.event_date || formData.event_data || formData.date || new Date().toISOString().split('T')[0],
+        eventName: formData.company_name || formData.event_name || formData.title || "Placement Event",
+        date: formData.test_date || formData.date || new Date().toISOString().split('T')[0],
+        startTime: formData.start_time,
+        endTime: formData.end_time,
+      });
+    }
+
+    if (procData?.system_hook === "OVERNIGHT_HOSTEL" && procData?.hook_trigger === "START") {
+      console.log(`[OVERNIGHT_HOSTEL_HOOK] Executing START trigger for ${procedureId}`);
+      return await processHostellerNotification({
+        procedureId,
+        hookData: Array.isArray(hookData) ? hookData : [],
+        coordinatorUid: mits_uid,
+        eventName: formData.event_name || formData.title || "Hostel Notification",
+        date: formData.event_date || formData.date || new Date().toISOString().split('T')[0],
       });
     }
 
@@ -619,6 +645,61 @@ export async function getRoleTags(
   } catch (error) {
     console.error("getMyRoleTagsService error:", error);
 
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
+}
+
+export async function searchFaculty(payload: BasicPayload): Promise<BasicResult> {
+  try {
+    const { query } = payload.body;
+    if (!query || query.trim().length < 2) {
+      return {
+        success: true,
+        statusCode: 200,
+        message: "Search query too short",
+        data: { faculty: [] }
+      };
+    }
+
+    const faculty = await prisma.faculty.findMany({
+      where: {
+        OR: [
+          { name: { contains: query, mode: "insensitive" } },
+          { mits_uid: { contains: query, mode: "insensitive" } }
+        ],
+        is_active: true,
+        deleted_at: null
+      },
+      select: {
+        mits_uid: true,
+        name: true,
+        email: true,
+        Departments: {
+          select: { dept_name: true }
+        }
+      },
+      take: 10
+    });
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Faculty search results",
+      data: {
+        faculty: faculty.map(f => ({
+          uid: f.mits_uid,
+          name: f.name,
+          email: f.email,
+          department: f.Departments?.dept_name || "N/A"
+        }))
+      }
+    };
+  } catch (error) {
+    console.error("searchFaculty service error:", error);
     return {
       success: false,
       statusCode: 500,

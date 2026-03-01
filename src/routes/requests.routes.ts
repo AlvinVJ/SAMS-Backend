@@ -15,14 +15,14 @@ requestsRouter.post(
 requestsRouter.get(
   "/my_requests",
   requireAuth,
-  requireRole("student"),
+  // requireRole("student"),
   getMyRequests
 );
 
 requestsRouter.get(
   "/details/:reqId",
   requireAuth,
-  requireRole("student"),
+  // requireRole("student"),
   getRequestDetails
 );
 
@@ -36,7 +36,7 @@ requestsRouter.get(
 requestsRouter.delete(
   "/withdraw/:requestId",
   requireAuth,
-  requireRole("student"),
+  // requireRole("student"),
   withdrawRequest
 );
 

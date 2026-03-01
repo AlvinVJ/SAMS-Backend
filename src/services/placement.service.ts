@@ -13,43 +13,103 @@ const generateId = () => Date.now().toString(36) + Math.random().toString(36).su
 
 export async function processPlacementAttendance(payload: {
     procedureId: string;
-    students: { mits_uid: string }[];
+    hookData: any[]; // Standardized parameter name
     coordinatorUid: string;
     eventName: string;
     date: string;
+    startTime?: string;
+    endTime?: string;
 }): Promise<Result> {
     try {
-        const { students, coordinatorUid, eventName, date, procedureId } = payload;
+        const { hookData, coordinatorUid, eventName, date, procedureId, startTime, endTime } = payload;
 
-        // 1. Fetch student profiles to group by class
-        const uids = students.map(s => s.mits_uid);
+        // 1. Robust UID Extraction
+        const rawUids: string[] = hookData.map((s: any) => {
+            if (typeof s === 'string') return s;
+            if (typeof s === 'object' && s !== null) {
+                // Search for UID in object properties (case-insensitive)
+                const uidKey = Object.keys(s).find(k =>
+                    k.toLowerCase() === 'mits_uid' ||
+                    k.toLowerCase() === 'mitsuid' ||
+                    k.toLowerCase() === 'uid' ||
+                    k.toLowerCase() === 'student_id'
+                );
+                return uidKey ? s[uidKey] : null;
+            }
+            return null;
+        }).filter(Boolean).map(u => u.toString().trim());
+
+        if (rawUids.length === 0) {
+            console.warn(`[PLACEMENT_BULK] No valid UIDs extracted from hookData array of length ${hookData.length}.`);
+            console.log(`[PLACEMENT_BULK] First item sample:`, hookData[0]);
+        }
+
+        // Generate both lowercase and uppercase variants for the database query
+        // This ensures matches regardless of how UIDs are stored in PG
+        const searchUids = [...new Set([
+            ...rawUids.map(u => u.toLowerCase()),
+            ...rawUids.map(u => u.toUpperCase())
+        ])];
+
+        // 2. Fetch student profiles from SQL
         const studentProfiles = await prisma.student.findMany({
-            where: { mits_uid: { in: uids } },
+            where: {
+                mits_uid: {
+                    in: searchUids,
+                }
+            },
             include: {
                 Classes: {
                     include: { Departments: true }
-                }
+                },
+                Batches: true
             }
         });
 
+        console.log(`[PLACEMENT_BULK] Found ${studentProfiles.length} profiles for ${rawUids.length} unique extracted UIDs.`);
+        if (studentProfiles.length < rawUids.length) {
+            const foundUids = new Set(studentProfiles.map(p => p.mits_uid.toLowerCase()));
+            const missingUids = rawUids.filter(u => !foundUids.has(u));
+            console.log(`[PLACEMENT_BULK] Missing UIDs in DB:`, missingUids.slice(0, 10));
+        }
+
         // 2. Group students by class_id
-        const classGroups: Record<number, any[]> = {};
+        const classGroups: Record<number, {
+            students: any[],
+            className: string,
+            batchName: string
+        }> = {};
+
         for (const student of studentProfiles) {
             const classId = student.class_id;
             if (!classGroups[classId]) {
-                classGroups[classId] = [];
+                classGroups[classId] = {
+                    students: [],
+                    className: student.Classes?.class || "Unknown Class",
+                    batchName: student.Batches?.batch || "Unknown Batch"
+                };
             }
-            classGroups[classId]!.push({
+            classGroups[classId]!.students.push({
                 mits_uid: student.mits_uid,
-                name: student.name
+                name: student.name,
+                gender: student.gender || "N/A"
             });
         }
 
+        // 3. Fetch Coordinator details for display
+        const coordinator = await prisma.faculty.findUnique({
+            where: { mits_uid: coordinatorUid },
+            include: { Departments: true }
+        });
+        const coordinatorName = coordinator?.name || "Unknown Coordinator";
+        const coordinatorDept = coordinator?.Departments?.dept_name || "N/A";
+
         const createdRequests = [];
 
-        // 3. For each class, find advisor and create a bulk request
-        for (const [classIdStr, classStudents] of Object.entries(classGroups)) {
+        // 4. For each class group, create a request for their class advisors
+        for (const [classIdStr, group] of Object.entries(classGroups)) {
             const classId = Number(classIdStr);
+            const { students: classStudents, className, batchName } = group;
 
             // Find Class Advisors
             const advisors = await prisma.classFaculty.findMany({
@@ -61,39 +121,77 @@ export async function processPlacementAttendance(payload: {
             });
 
             if (advisors.length === 0) {
-                console.warn(`No advisor found for class_id ${classId}`);
+                console.warn(`[PLACEMENT_BULK] No active advisor found for class_id ${classId} (${className})`);
                 continue;
             }
 
             const requestId = generateId();
+            console.log(`[PLACEMENT_BULK] Routing request ${requestId} for ${className} (${batchName}) to advisors: ${advisors.map(a => a.mits_uid).join(', ')}`);
             const nowISO = new Date().toISOString();
-            const firstAdvisor = advisors[0];
-            const studentProfile = studentProfiles.find(s => s.class_id === classId);
-            const className = studentProfile?.Classes.class || "Unknown Class";
 
             // Create SQL Request entry
-            // Note: We create one request per class advisor for now, or one request tracked by advisors
             await prisma.requests.create({
                 data: {
                     req_id: requestId,
-                    proc_id: procedureId, // Use actual proc_id
+                    proc_id: procedureId,
                     created_by: coordinatorUid,
                     status: 0,
                 }
             });
 
+            // Populate ToApprove table for all advisors
+            await prisma.toApprove.createMany({
+                data: advisors.map(a => ({
+                    req_id: requestId,
+                    approverUID: a.mits_uid,
+                    approvalLevel: 1,
+                    approvalType: "CLASS_ADVISOR"
+                }))
+            });
+
+            // Update Analytics pending counts
+            try {
+                const advisorRole = await prisma.roles.findUnique({ where: { role_tag: "CLASS_ADVISOR" } });
+                if (advisorRole) {
+                    for (const a of advisors) {
+                        await prisma.analytics.upsert({
+                            where: { mits_uid_role_id: { mits_uid: a.mits_uid, role_id: advisorRole.role_id } },
+                            create: { mits_uid: a.mits_uid, role_id: advisorRole.role_id, pending: 1 },
+                            update: { pending: { increment: 1 } }
+                        });
+                    }
+                }
+            } catch (err) {
+                console.error(`[PLACEMENT_BULK] Analytics update failed for request ${requestId}:`, err);
+            }
+
             // Create Firestore Request entry
             await firestore.collection("requests").doc(requestId).set({
                 reqId: requestId,
-                procId: procedureId, // Use actual proc_id
+                procId: procedureId,
                 type: "PLACEMENT_ATTENDANCE",
                 isBulk: true,
-                eventName: eventName,
-                eventDate: date,
-                className: className,
-                students: classStudents,
+                companyName: eventName,
+                testDate: date,
+                startTime: startTime || "N/A",
+                endTime: endTime || "N/A",
+                studentId: coordinatorUid, // Frontend often uses studentId for requester
+                studentName: "Placement Coordinator", // Identity change
+                requesterRole: `Placement Coordinator (${coordinatorDept})`,
+                className: `${className} (${batchName})`,
+                student_list: classStudents, // Key used by PDF generator
+                formData: {
+                    company_name: eventName,
+                    test_date: date,
+                    start_time: startTime || "N/A",
+                    end_time: endTime || "N/A",
+                    class_name: className,
+                    batch_name: batchName,
+                    student_list: classStudents
+                },
                 current_level: 1,
                 status: "PENDING",
+                lastLevelRoleTag: "Class Advisor", // The only level in this bulk process
                 createdAt: nowISO,
                 updatedAt: nowISO,
                 approval_progress: [
@@ -105,7 +203,8 @@ export async function processPlacementAttendance(payload: {
                             mits_uid: a.mits_uid,
                             decision: null,
                             timestamp: null,
-                            comments: null
+                            comments: null,
+                            role: "CLASS_ADVISOR"
                         }))
                     }
                 ]
@@ -113,7 +212,7 @@ export async function processPlacementAttendance(payload: {
 
             createdRequests.push({
                 requestId,
-                className,
+                className: `${className} (${batchName})`,
                 advisorCount: advisors.length,
                 studentCount: classStudents.length
             });

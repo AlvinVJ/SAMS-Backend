@@ -1,6 +1,8 @@
 import { prisma } from "../db/prisma.js";
 import { firestore } from "../config/firebase.js";
-import { enrichStudentListInFormData, getUserNameFromUid } from "./requests.service.js";
+import { enrichStudentListInFormData, getUserNameFromUid, getLastLevelRoleTag } from "./requests.service.js";
+import { processHostellerNotification } from "./hostel.service.js";
+import { processPlacementAttendance } from "./placement.service.js";
 
 interface Result {
   success: boolean;
@@ -61,34 +63,60 @@ export async function getRequestsToApproveService(payload: any) {
         Requests: {
           include: {
             Procedures: true,
-            UserAccount: {
-              include: {
-                Student: {
-                  include: {
-                    Classes: {
-                      include: { Departments: true }
-                    }
-                  }
-                }
-              }
-            }
           }
         }
       }
     });
+    if (approvals.length === 0) {
+      return { success: true, statusCode: 200, message: "No pending requests found", data: { requests: [] } };
+    }
+
+    // 1. Batch fetch all Firestore Documents for performance (O(1) approach)
+    const reqIds = approvals.map(a => a.Requests.req_id);
+    const procIds = [...new Set(approvals.map(a => a.Requests.proc_id))];
+
+    const [requestSnaps, procedureSnaps] = await Promise.all([
+      firestore.getAll(...reqIds.map(id => firestore.collection("requests").doc(id))),
+      firestore.getAll(...procIds.map(id => firestore.collection("procedures").doc(id)))
+    ]);
+
+    const requestMap = new Map(requestSnaps.map(s => [s.id, s.exists ? s.data() : null]));
+    const procedureMap = new Map(procedureSnaps.map(s => [s.id, s.exists ? s.data() : null]));
+
+    // 2. Batch fetch Student/Faculty names for all UIDs involved (Requesters + Approvers in History)
+    const allUids = new Set<string>();
+    approvals.forEach(a => allUids.add(a.Requests.created_by));
+    requestSnaps.forEach(s => {
+      const d = s.data();
+      if (d?.approval_progress) {
+        d.approval_progress.forEach((p: any) => p.decisions?.forEach((dec: any) => allUids.add(dec.mits_uid)));
+      }
+    });
+
+    const [facultyNames, studentNames] = await Promise.all([
+      prisma.faculty.findMany({ where: { mits_uid: { in: [...allUids] } } }),
+      prisma.student.findMany({
+        where: { mits_uid: { in: [...allUids] } },
+        include: { Classes: { include: { Departments: true } } }
+      })
+    ]);
+
+    const nameMap = new Map<string, string>();
+    facultyNames.forEach(f => nameMap.set(f.mits_uid, f.name));
+    studentNames.forEach(s => nameMap.set(s.mits_uid, s.name));
+
+    const studentDataMap = new Map(studentNames.map(s => [s.mits_uid, s]));
 
     const approvableRequests: any[] = [];
 
     for (const app of approvals) {
       const req = app.Requests;
-      const snap = await firestore.collection("requests").doc(req.req_id).get();
-      if (!snap.exists) continue;
+      const data = requestMap.get(req.req_id);
+      const procedureDef = procedureMap.get(req.proc_id);
 
-      const data = snap.data()!;
+      if (!data) continue;
+
       const currentLevel = data.current_level;
-
-      const procDoc = await firestore.collection("procedures").doc(req.proc_id).get();
-      const procedureDef = procDoc.exists ? procDoc.data() : null;
 
       const approvalHistory: any[] = [];
       const historyBlocks = (data.approval_progress || []).filter((lvl: any) => lvl.level < currentLevel);
@@ -99,7 +127,7 @@ export async function getRequestsToApproveService(payload: any) {
           if (decision.decision) {
             approvalHistory.push({
               level: block.level,
-              approverName: await getUserNameFromUid(decision.mits_uid),
+              approverName: nameMap.get(decision.mits_uid) || "Unknown User",
               role: (decision.role || block.role || fallbackRole).replaceAll('_', ' ').toUpperCase(),
               status: decision.decision,
               comments: decision.comments,
@@ -122,14 +150,24 @@ export async function getRequestsToApproveService(payload: any) {
         }
       }
 
+      const student = studentDataMap.get(req.created_by);
+
       approvableRequests.push({
         id: req.req_id,
         type: req.Procedures?.title || "Request",
-        studentName: req.UserAccount?.Student?.name || data.studentName || "Unknown",
+        studentName: student?.name || data.studentName || "Unknown",
         studentId: req.created_by,
-        department: req.UserAccount?.Student?.Classes?.Departments?.dept_name || "N/A",
+        department: student?.Classes?.Departments?.dept_name || "N/A",
         date: req.created_at.toISOString().split("T")[0],
-        description: (data.formData) ? Object.entries(data.formData).filter(([k]) => k !== "DEBUG_SYNC").map(([k, v]) => `${k}: ${v}`).join(" | ") : "No description",
+        description: (data.formData)
+          ? Object.entries(data.formData)
+            .filter(([k]) => k !== "DEBUG_SYNC" && k !== "attachmentUrl" && k !== "attachmentPath" && k !== "attachmentName" && k !== "attachmentType")
+            .map(([k, v]: [string, any]) => {
+              if (v && typeof v === 'object' && v.name) return `${k}: ${v.name}`;
+              if (v && typeof v === 'object' && Array.isArray(v)) return `${k}: [List of ${v.length}]`;
+              return `${k}: ${v}`;
+            }).join(" | ")
+          : "No description",
         attachments: data.attachments || [],
         roleTag: app.approvalType || selectedRole,
         color: "blue",
@@ -137,9 +175,7 @@ export async function getRequestsToApproveService(payload: any) {
         students: students,
         isBulk: students !== null,
         approvalHistory: approvalHistory,
-        lastLevelRoleTag: (procedureDef as any)?.approvalLevels?.length > 0
-          ? ((procedureDef as any).approvalLevels[(procedureDef as any).approvalLevels.length - 1].role || (procedureDef as any).approvalLevels[(procedureDef as any).approvalLevels.length - 1].roleIds?.[0] || "Approver")
-          : "Approver"
+        lastLevelRoleTag: data.lastLevelRoleTag || getLastLevelRoleTag(procedureDef)
       });
     }
 
@@ -162,10 +198,13 @@ export async function approveRequestService(payload: any): Promise<Result> {
     if (!snap.exists) return { success: false, statusCode: 404, message: "Request not found" };
 
     const data = snap.data()!;
+    if (data.status !== "PENDING") {
+      return { success: false, statusCode: 400, message: `Request is already ${data.status.toLowerCase()}` };
+    }
     const approvalProgress = data.approval_progress || data.approvalProgress || [];
     const currentLevel = data.current_level !== undefined ? data.current_level : (data.currentLevel !== undefined ? data.currentLevel : 1);
     const procId = data.procId || data.proc_id || data.procedure_id || data.procedureId;
-    const studentId = data.studentId || data.student_id || data.studentUID;
+    const studentId = data.studentId || data.student_id || data.studentUID || data.created_by || data.createdBy;
 
     if (!procId) {
       console.error(`Approval failed: Request ${requestId} missing procId mapping.`);
@@ -256,6 +295,33 @@ export async function approveRequestService(payload: any): Promise<Result> {
       } else {
         data.status = "APPROVED";
         await prisma.requests.update({ where: { req_id: requestId }, data: { status: 1 } });
+
+        // Trigger Standardized System Hook (END) after full approval
+        if (procedure?.system_hook && procedure?.hook_trigger === "END") {
+          const formData = data.formData || {};
+          const hookData = formData.hook_data || formData.student_list || formData.uids || [];
+          console.log(`[SYSTEM_HOOK_END] Hook data to process:`, JSON.stringify(hookData).substring(0, 500), hookData.length > 0 ? "..." : "");
+
+          console.log(`[SYSTEM_HOOK_END] Triggering ${procedure.system_hook} for approved request ${requestId}`);
+
+          if (procedure.system_hook === "OVERNIGHT_HOSTEL") {
+            await processHostellerNotification({
+              procedureId: procId,
+              hookData: Array.isArray(hookData) ? hookData : [],
+              coordinatorUid: studentId,
+              eventName: formData.event_name || formData.title || "Hostel Notification",
+              date: formData.event_date || formData.date || new Date().toISOString().split('T')[0],
+            });
+          } else if (procedure.system_hook === "PLACEMENT_BULK") {
+            await processPlacementAttendance({
+              procedureId: procId,
+              hookData: Array.isArray(hookData) ? hookData : [],
+              coordinatorUid: studentId,
+              eventName: formData.event_name || formData.title || "Placement Event Approved",
+              date: formData.test_date || formData.date || new Date().toISOString().split('T')[0],
+            });
+          }
+        }
       }
     }
 
@@ -307,6 +373,9 @@ export async function rejectRequestService(payload: any): Promise<Result> {
     if (!snap.exists) return { success: false, statusCode: 404, message: "Request not found" };
 
     const data = snap.data()!;
+    if (data.status !== "PENDING") {
+      return { success: false, statusCode: 400, message: `Request is already ${data.status.toLowerCase()}` };
+    }
     const approvalProgress = data.approval_progress || data.approvalProgress || [];
     const currentLevel = data.current_level !== undefined ? data.current_level : (data.currentLevel !== undefined ? data.currentLevel : 1);
     const levelBlock = approvalProgress.find((lvl: any) => lvl.level === currentLevel);
@@ -400,12 +469,12 @@ export async function getActedRequestsService(user: any): Promise<Result> {
           status_text = `Pending ${roleName}`;
         }
 
-        const userData = await prisma.userAccount.findUnique({
+        const student = await prisma.student.findUnique({
           where: { mits_uid: prismaReq?.created_by || "" },
-          include: { Student: { include: { Classes: { include: { Departments: true } } } } }
+          include: { Classes: { include: { Departments: true } } }
         });
 
-        // Enrich student lists (names/genders)
+        // Enrich student lists (names/genders) - skip if needed
         const sourceData = data.formData || data.form_response;
         let students = null;
         if (sourceData) {
@@ -448,16 +517,23 @@ export async function getActedRequestsService(user: any): Promise<Result> {
           current_level: data.current_level || 1,
           total_levels,
           formData: data.formData || {},
+          description: (data.formData)
+            ? Object.entries(data.formData)
+              .filter(([k]) => k !== "DEBUG_SYNC" && k !== "attachmentUrl" && k !== "attachmentPath" && k !== "attachmentName" && k !== "attachmentType")
+              .map(([k, v]: [string, any]) => {
+                if (v && typeof v === 'object' && v.name) return `${k}: ${v.name}`;
+                if (v && typeof v === 'object' && Array.isArray(v)) return `${k}: [List of ${v.length}]`;
+                return `${k}: ${v}`;
+              }).join(" | ")
+            : "No description",
           students: students,
           isBulk: students !== null,
-          studentName: userData?.Student?.name || data.studentName || "Unknown",
+          studentName: student?.name || data.studentName || "Unknown",
           studentId: prismaReq?.created_by,
-          department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
+          department: student?.Classes?.Departments?.dept_name || "N/A",
           roleTag: (procDoc.data()?.approvalLevels?.find((l: any) => l.level === data.current_level)?.role || "Approver"),
           approvalHistory: approvalHistory,
-          lastLevelRoleTag: (procDoc.data() as any)?.approvalLevels?.length > 0
-            ? ((procDoc.data() as any).approvalLevels[(procDoc.data() as any).approvalLevels.length - 1].role || (procDoc.data() as any).approvalLevels[(procDoc.data() as any).approvalLevels.length - 1].roleIds?.[0] || "Approver")
-            : "Approver"
+          lastLevelRoleTag: data.lastLevelRoleTag || getLastLevelRoleTag(procDoc.data())
         });
       }
     }
@@ -560,36 +636,36 @@ export async function getFacultyProfileService(user: any): Promise<Result> {
   try {
     const userAccount = await prisma.userAccount.findUnique({
       where: { auth_uid: user.uid },
+    });
+
+    if (!userAccount) return { success: false, statusCode: 404, message: "Faculty account not found" };
+
+    const faculty = await prisma.faculty.findUnique({
+      where: { mits_uid: userAccount.mits_uid },
       include: {
-        Faculty: {
+        Departments: true,
+        ClassFaculty: {
           include: {
-            Departments: true,
-            ClassFaculty: {
-              include: {
-                Classes: true
-              }
-            }
-          }
-        },
-        RoleMapping: {
-          include: {
-            Roles: true
+            Classes: true
           }
         }
       }
     });
 
-    if (!userAccount || !userAccount.Faculty) {
+    const roleMappings = await prisma.roleMapping.findMany({
+      where: { mits_uid: userAccount.mits_uid, is_active: true },
+      include: { Roles: true }
+    });
+
+    if (!faculty) {
       return { success: false, statusCode: 404, message: "Faculty profile not found" };
     }
-
-    const faculty = userAccount.Faculty;
     const assignedClasses = faculty.ClassFaculty.map(cf => ({
       className: cf.Classes.class,
       role: cf.role_tag.replaceAll('_', ' ').toUpperCase()
     }));
 
-    const roles = userAccount.RoleMapping.map(rm => rm.Roles.role_tag.replaceAll('_', ' ').toUpperCase());
+    const roles = roleMappings.map(rm => rm.Roles.role_tag.replaceAll('_', ' ').toUpperCase());
 
     return {
       success: true,

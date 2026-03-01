@@ -1,6 +1,7 @@
 import { prisma } from "../db/prisma.js";
 import admin, { firestore } from "../config/firebase.js";
 import { publishRequestWithdrawn } from "../queues/producers/importantProducer.js";
+import { supabase } from "../config/supabase.js";
 
 interface Result {
   success: boolean;
@@ -13,12 +14,17 @@ const generateId = () => Date.now().toString(36) + Math.random().toString(36).su
 
 // Helper: Resolve Name from UID
 export async function getUserNameFromUid(uid: string): Promise<string> {
-  const account = await prisma.userAccount.findUnique({
+  const faculty = await prisma.faculty.findUnique({
     where: { mits_uid: uid },
-    include: { Faculty: true, Student: true },
+    select: { name: true },
   });
-  if (account?.Faculty?.name) return account.Faculty.name;
-  if (account?.Student?.name) return account.Student.name;
+  if (faculty?.name) return faculty.name;
+
+  const student = await prisma.student.findUnique({
+    where: { mits_uid: uid },
+    select: { name: true },
+  });
+  if (student?.name) return student.name;
   return "Unknown User";
 }
 
@@ -31,6 +37,17 @@ export async function resolveRequestStatus(req: any, procData: any, currentLevel
   const activeLevel = procData?.approvalLevels?.find((l: any) => l.level === currentLevel);
   const roleName = (activeLevel?.role || activeLevel?.roleIds?.[0] || "Approver").replaceAll('_', ' ').toUpperCase();
   return { text: `Pending ${roleName}`, color: "warning" };
+}
+
+// Helper: Get robust last level role tag
+export function getLastLevelRoleTag(procData: any): string {
+  if (!procData?.approvalLevels || procData.approvalLevels.length === 0) return "Principal";
+
+  // Sort by level descending to find the actual last level by number
+  const levels = [...procData.approvalLevels].sort((a: any, b: any) => b.level - a.level);
+  const lastLevel = levels[0];
+
+  return lastLevel?.role || lastLevel?.roleIds?.[0] || "Principal";
 }
 
 // Helper: Resolve Approvers
@@ -266,6 +283,7 @@ export async function createRequest(payload: { body: any; user: any }): Promise<
       updatedAt: nowISO,
       last_updated_at: nowISO,
       formData: formData,
+      lastLevelRoleTag: getLastLevelRoleTag(procDoc.data()),
       timeline: [{ action: "SUBMITTED", by: studentName, role: "STUDENT", timestamp: nowISO }],
       approval_progress: approval_progress
     });
@@ -288,23 +306,54 @@ export async function getMyRequests(user: any): Promise<Result> {
     });
 
     const formatted = [];
+    const procCache = new Map<string, any>();
 
     for (const req of requests) {
-      const userData = await prisma.userAccount.findUnique({
+      const student = await prisma.student.findUnique({
         where: { mits_uid: req.created_by },
-        include: { Student: { include: { Classes: { include: { Departments: true } } } } }
+        include: { Classes: { include: { Departments: true } } }
       });
+      const faculty = !student ? await prisma.faculty.findUnique({
+        where: { mits_uid: req.created_by },
+        include: { Departments: true }
+      }) : null;
+
+      let status_text = req.status === 1 ? "Approved" : (req.status === 2 ? "Rejected" : (req.status === 3 ? "Withdrawn" : "Pending"));
+      let color = req.status === 1 ? "success" : (req.status === 2 ? "error" : (req.status === 3 ? "withdrawn" : "warning"));
+
+      // Optimization: Only resolve detailed status for PENDING requests
+      if (req.status === 0) {
+        try {
+          let procData = procCache.get(req.proc_id);
+          if (!procData) {
+            const procDoc = await firestore.collection("procedures").doc(req.proc_id).get();
+            procData = procDoc.exists ? procDoc.data() : null;
+            if (procData) procCache.set(req.proc_id, procData);
+          }
+
+          const snap = await firestore.collection("requests").doc(req.req_id).get();
+          if (snap.exists) {
+            const data = snap.data()!;
+            const resolved = await resolveRequestStatus(req, procData, data.current_level || 1);
+            status_text = resolved.text;
+            color = resolved.color;
+          }
+        } catch (e) {
+          console.error(`Failed to resolve status for request ${req.req_id}:`, e);
+        }
+      }
 
       formatted.push({
         req_id: req.req_id,
         procedure_title: req.Procedures?.title || "Unknown Request",
         created_at: req.created_at,
         status: req.status,
-        status_text: req.status === 1 ? "Approved" : (req.status === 2 ? "Rejected" : (req.status === 3 ? "Withdrawn" : "Pending")),
-        color: req.status === 1 ? "success" : (req.status === 2 ? "error" : (req.status === 3 ? "withdrawn" : "warning")),
-        studentName: userData?.Student?.name || "Unknown",
+        status_text,
+        color,
+        studentName: student?.name || faculty?.name || "Unknown",
         studentId: req.created_by,
-        department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
+        department: student?.Classes?.Departments?.dept_name || faculty?.Departments?.dept_name || "N/A",
+        lastLevelRoleTag: (req as any).lastLevelRoleTag || "Principal",
         is_resolved: false,
       });
     }
@@ -356,15 +405,16 @@ export async function getRequestDetails(requestId: string): Promise<Result> {
       }
     }
 
-    const userData = await prisma.userAccount.findUnique({
+    const student = await prisma.student.findUnique({
       where: { mits_uid: req.created_by },
-      include: { Student: { include: { Classes: { include: { Departments: true } } } } }
+      include: { Classes: { include: { Departments: true } } }
     });
+    const faculty = !student ? await prisma.faculty.findUnique({
+      where: { mits_uid: req.created_by },
+      include: { Departments: true }
+    }) : null;
 
-    const lastLevel = (procData as any)?.approvalLevels?.length > 0
-      ? (procData as any).approvalLevels[(procData as any).approvalLevels.length - 1]
-      : null;
-    const lastLevelRoleTag = lastLevel?.role || lastLevel?.roleIds?.[0] || "Approver";
+    const lastLevelRoleTag = data.lastLevelRoleTag || getLastLevelRoleTag(procData);
 
     const sourceData = data.formData || data.form_response;
     let students = null;
@@ -393,9 +443,9 @@ export async function getRequestDetails(requestId: string): Promise<Result> {
         formData: data.formData || {},
         students: students,
         isBulk: students !== null,
-        studentName: userData?.Student?.name || data.studentName || "Unknown",
+        studentName: student?.name || faculty?.name || data.studentName || "Unknown",
         studentId: req.created_by,
-        department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
+        department: student?.Classes?.Departments?.dept_name || faculty?.Departments?.dept_name || "N/A",
         lastLevelRoleTag,
         is_resolved: true,
       }
@@ -477,7 +527,8 @@ export async function withdrawRequest(requestId: string, user: any): Promise<Res
     });
 
     if (!request) return { success: false, statusCode: 404, message: "Request not found" };
-    if (request.created_by !== userAccount.mits_uid) {
+    const emailPrefix = user.email.split("@")[0];
+    if (request.created_by !== userAccount.mits_uid && request.created_by !== emailPrefix) {
       return { success: false, statusCode: 403, message: "Not authorized to withdraw this request" };
     }
     if (request.status !== 0) {
@@ -518,9 +569,25 @@ export async function withdrawRequest(requestId: string, user: any): Promise<Res
       data: { status: 3 }
     });
 
-    // 4. Update Firestore status
+    // 4. Update Firestore status and Cleanup Storage
     const nowISO = new Date().toISOString();
-    await firestore.collection("requests").doc(requestId).update({
+    const reqDocRef = firestore.collection("requests").doc(requestId);
+    const doc = await reqDocRef.get();
+    const data = doc.data();
+
+    // Delete attachment if exists
+    if (data?.formData?.attachmentPath) {
+      console.log(`[DEBUG] Deleting attachment from Supabase: ${data.formData.attachmentPath}`);
+      const { error } = await supabase.storage
+        .from("assets_sams")
+        .remove([data.formData.attachmentPath]);
+
+      if (error) {
+        console.error("[DEBUG] Supabase file deletion error:", error);
+      }
+    }
+
+    await reqDocRef.update({
       status: "WITHDRAWN",
       updatedAt: nowISO,
       last_updated_at: nowISO,
@@ -544,3 +611,4 @@ export async function withdrawRequest(requestId: string, user: any): Promise<Res
     return { success: false, statusCode: 500, message: "Internal server error" };
   }
 }
+
