@@ -304,6 +304,7 @@ export async function getMyRequests(user: any): Promise<Result> {
     });
 
     const formatted = [];
+    const procCache = new Map<string, any>();
 
     for (const req of requests) {
       const student = await prisma.student.findUnique({
@@ -315,13 +316,38 @@ export async function getMyRequests(user: any): Promise<Result> {
         include: { Departments: true }
       }) : null;
 
+      let status_text = req.status === 1 ? "Approved" : (req.status === 2 ? "Rejected" : (req.status === 3 ? "Withdrawn" : "Pending"));
+      let color = req.status === 1 ? "success" : (req.status === 2 ? "error" : (req.status === 3 ? "withdrawn" : "warning"));
+
+      // Optimization: Only resolve detailed status for PENDING requests
+      if (req.status === 0) {
+        try {
+          let procData = procCache.get(req.proc_id);
+          if (!procData) {
+            const procDoc = await firestore.collection("procedures").doc(req.proc_id).get();
+            procData = procDoc.exists ? procDoc.data() : null;
+            if (procData) procCache.set(req.proc_id, procData);
+          }
+
+          const snap = await firestore.collection("requests").doc(req.req_id).get();
+          if (snap.exists) {
+            const data = snap.data()!;
+            const resolved = await resolveRequestStatus(req, procData, data.current_level || 1);
+            status_text = resolved.text;
+            color = resolved.color;
+          }
+        } catch (e) {
+          console.error(`Failed to resolve status for request ${req.req_id}:`, e);
+        }
+      }
+
       formatted.push({
         req_id: req.req_id,
         procedure_title: req.Procedures?.title || "Unknown Request",
         created_at: req.created_at,
         status: req.status,
-        status_text: req.status === 1 ? "Approved" : (req.status === 2 ? "Rejected" : (req.status === 3 ? "Withdrawn" : "Pending")),
-        color: req.status === 1 ? "success" : (req.status === 2 ? "error" : (req.status === 3 ? "withdrawn" : "warning")),
+        status_text,
+        color,
         studentName: student?.name || faculty?.name || "Unknown",
         studentId: req.created_by,
         department: student?.Classes?.Departments?.dept_name || faculty?.Departments?.dept_name || "N/A",
