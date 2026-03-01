@@ -370,7 +370,10 @@ export async function getRequestDetails(requestId: string): Promise<Result> {
 
     const userData = await prisma.userAccount.findUnique({
       where: { mits_uid: req.created_by },
-      include: { Student: { include: { Classes: { include: { Departments: true } } } } }
+      include: {
+        Student: { include: { Classes: { include: { Departments: true } } } },
+        Faculty: { include: { Departments: true } }
+      }
     });
 
     const lastLevelRoleTag = data.lastLevelRoleTag || getLastLevelRoleTag(procData);
@@ -402,9 +405,9 @@ export async function getRequestDetails(requestId: string): Promise<Result> {
         formData: data.formData || {},
         students: students,
         isBulk: students !== null,
-        studentName: userData?.Student?.name || data.studentName || "Unknown",
+        studentName: userData?.Student?.name || userData?.Faculty?.name || data.studentName || "Unknown",
         studentId: req.created_by,
-        department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
+        department: userData?.Student?.Classes?.Departments?.dept_name || userData?.Faculty?.Departments?.dept_name || "N/A",
         lastLevelRoleTag,
         is_resolved: true,
       }

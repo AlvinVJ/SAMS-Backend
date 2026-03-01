@@ -487,17 +487,40 @@ export async function create_request(
     const procData = procDoc.data();
 
     if (procData?.system_hook === "PLACEMENT_BULK") {
-      // Find the student list in formData (it could be named 'student_list' or something like 'upload_student_list_csv')
-      const studentListData = formData.student_list ||
+      // Robust student list extraction from formData
+      let studentListData = formData.student_list ||
         formData.upload_student_list_csv ||
-        Object.entries(formData).find(([k]) => k.includes('student_list'))?.[1] || [];
+        formData.students ||
+        formData.studentList || [];
+
+      if (studentListData.length === 0) {
+        // Fuzzy search for any key containing 'student' and 'list' or just 'students'
+        const fuzzyKey = Object.keys(formData).find(k => {
+          const keyLower = k.toLowerCase();
+          return (keyLower.includes('student') && (keyLower.includes('list') || keyLower.includes('data'))) ||
+            keyLower === 'students' ||
+            keyLower === 'uids';
+        });
+        if (fuzzyKey) studentListData = formData[fuzzyKey];
+      }
+
+      // Final fallback: Find ANY key that contains an array
+      if (!Array.isArray(studentListData) || studentListData.length === 0) {
+        const arrayKey = Object.keys(formData).find(k => Array.isArray(formData[k]) && formData[k].length > 0);
+        if (arrayKey) studentListData = formData[arrayKey];
+      }
+
+      console.log(`[PLACEMENT_BULK_HOOK] Extracted student list from keys: ${Object.keys(formData).join(', ')}. Found ${Array.isArray(studentListData) ? studentListData.length : 0} items.`);
 
       return await processPlacementAttendance({
         procedureId: procedureId,
-        students: studentListData,
+        students: Array.isArray(studentListData) ? studentListData : [],
         coordinatorUid: mits_uid,
-        eventName: formData.event_name || formData.title || formData.event_name_ || Object.entries(formData).find(([k]) => k.includes('event_name'))?.[1] || "Placement Event",
-        date: formData.event_date || formData.event_data || formData.date || new Date().toISOString().split('T')[0],
+        eventName: formData.event_name || formData.title || formData.company_name || formData.company || formData.event_name_ || Object.entries(formData).find(([k]) => {
+          const kl = k.toLowerCase();
+          return kl.includes('event_name') || kl.includes('company_name') || kl.includes('event_title') || (kl.includes('company') && !kl.includes('list'));
+        })?.[1] || "Placement Event",
+        date: formData.test_date || formData.event_date || formData.event_data || formData.date || new Date().toISOString().split('T')[0],
       });
     }
 
