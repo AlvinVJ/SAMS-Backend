@@ -123,7 +123,15 @@ export async function getRequestsToApproveService(payload: any) {
         studentId: req.created_by,
         department: student?.Classes?.Departments?.dept_name || "N/A",
         date: req.created_at.toISOString().split("T")[0],
-        description: (data.formData) ? Object.entries(data.formData).filter(([k]) => k !== "DEBUG_SYNC").map(([k, v]) => `${k}: ${v}`).join(" | ") : "No description",
+        description: (data.formData)
+          ? Object.entries(data.formData)
+            .filter(([k]) => k !== "DEBUG_SYNC" && k !== "attachmentUrl" && k !== "attachmentPath" && k !== "attachmentName" && k !== "attachmentType")
+            .map(([k, v]: [string, any]) => {
+              if (v && typeof v === 'object' && v.name) return `${k}: ${v.name}`;
+              if (v && typeof v === 'object' && Array.isArray(v)) return `${k}: [List of ${v.length}]`;
+              return `${k}: ${v}`;
+            }).join(" | ")
+          : "No description",
         attachments: data.attachments || [],
         roleTag: app.approvalType || selectedRole,
         color: "blue",
@@ -446,6 +454,15 @@ export async function getActedRequestsService(user: any): Promise<Result> {
           current_level: data.current_level || 1,
           total_levels,
           formData: data.formData || {},
+          description: (data.formData)
+            ? Object.entries(data.formData)
+              .filter(([k]) => k !== "DEBUG_SYNC" && k !== "attachmentUrl" && k !== "attachmentPath" && k !== "attachmentName" && k !== "attachmentType")
+              .map(([k, v]: [string, any]) => {
+                if (v && typeof v === 'object' && v.name) return `${k}: ${v.name}`;
+                if (v && typeof v === 'object' && Array.isArray(v)) return `${k}: [List of ${v.length}]`;
+                return `${k}: ${v}`;
+              }).join(" | ")
+            : "No description",
           students: students,
           isBulk: students !== null,
           studentName: student?.name || data.studentName || "Unknown",
