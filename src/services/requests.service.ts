@@ -1,5 +1,6 @@
 import { prisma } from "../db/prisma.js";
 import admin, { firestore } from "../config/firebase.js";
+import { supabase } from "../config/supabase.js";
 
 interface Result {
   success: boolean;
@@ -567,9 +568,25 @@ export async function withdrawRequest(requestId: string, user: any): Promise<Res
       data: { status: 3 }
     });
 
-    // 4. Update Firestore status
+    // 4. Update Firestore status and Cleanup Storage
     const nowISO = new Date().toISOString();
-    await firestore.collection("requests").doc(requestId).update({
+    const reqDocRef = firestore.collection("requests").doc(requestId);
+    const doc = await reqDocRef.get();
+    const data = doc.data();
+
+    // Delete attachment if exists
+    if (data?.formData?.attachmentPath) {
+      console.log(`[DEBUG] Deleting attachment from Supabase: ${data.formData.attachmentPath}`);
+      const { error } = await supabase.storage
+        .from("assets_sams")
+        .remove([data.formData.attachmentPath]);
+
+      if (error) {
+        console.error("[DEBUG] Supabase file deletion error:", error);
+      }
+    }
+
+    await reqDocRef.update({
       status: "WITHDRAWN",
       updatedAt: nowISO,
       last_updated_at: nowISO,
