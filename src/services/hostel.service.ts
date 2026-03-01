@@ -17,16 +17,16 @@ const generateId = () => Date.now().toString(36) + Math.random().toString(36).su
  */
 export async function processHostellerNotification(payload: {
     procedureId: string;
-    students: any[];
+    hookData: any[];
     coordinatorUid: string;
     eventName: string;
     date: string;
 }): Promise<Result> {
     try {
-        const { students, coordinatorUid, eventName, date, procedureId } = payload;
+        const { hookData, coordinatorUid, eventName, date, procedureId } = payload;
 
         // 1. Robust UID Extraction
-        const rawUids: string[] = students.map((s: any) => {
+        const rawUids: string[] = hookData.map((s: any) => {
             if (typeof s === "string") return s;
             if (typeof s === "object" && s !== null) {
                 const uidKey = Object.keys(s).find(k =>
@@ -82,13 +82,23 @@ export async function processHostellerNotification(payload: {
             }
         }
 
-        // 4. Fetch Coordinator details
-        const coordinator = await prisma.faculty.findUnique({
+        // 4. Fetch Coordinator/Requester details
+        const faculty = await prisma.faculty.findUnique({
             where: { mits_uid: coordinatorUid },
             include: { Departments: true }
         });
-        const coordinatorName = coordinator?.name || "Unknown Coordinator";
-        const coordinatorDept = coordinator?.Departments?.dept_name || "N/A";
+
+        let coordinatorName = faculty?.name;
+        let coordinatorDept = faculty?.Departments?.dept_name;
+
+        if (!faculty) {
+            const student = await prisma.student.findUnique({
+                where: { mits_uid: coordinatorUid },
+                include: { Classes: { include: { Departments: true } } }
+            });
+            coordinatorName = student?.name || "Unknown";
+            coordinatorDept = student?.Classes?.Departments?.dept_name || "N/A";
+        }
 
         const createdRequests = [];
 
@@ -112,6 +122,7 @@ export async function processHostellerNotification(payload: {
             }
 
             const requestId = generateId();
+            console.log(`[OVERNIGHT_HOSTEL] Routing request ${requestId} for ${group.label} to wardens: ${wardens.map(w => w.mits_uid).join(', ')}`);
             const nowISO = new Date().toISOString();
 
             // SQL Entries

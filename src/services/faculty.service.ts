@@ -1,6 +1,8 @@
 import { prisma } from "../db/prisma.js";
 import { firestore } from "../config/firebase.js";
 import { enrichStudentListInFormData, getUserNameFromUid, getLastLevelRoleTag } from "./requests.service.js";
+import { processHostellerNotification } from "./hostel.service.js";
+import { processPlacementAttendance } from "./placement.service.js";
 
 interface Result {
   success: boolean;
@@ -293,6 +295,32 @@ export async function approveRequestService(payload: any): Promise<Result> {
       } else {
         data.status = "APPROVED";
         await prisma.requests.update({ where: { req_id: requestId }, data: { status: 1 } });
+
+        // Trigger Standardized System Hook (END) after full approval
+        if (procedure?.system_hook && procedure?.hook_trigger === "END") {
+          const formData = data.formData || {};
+          const hookData = formData.hook_data || formData.student_list || formData.uids || [];
+
+          console.log(`[SYSTEM_HOOK_END] Triggering ${procedure.system_hook} for approved request ${requestId}`);
+
+          if (procedure.system_hook === "OVERNIGHT_HOSTEL") {
+            await processHostellerNotification({
+              procedureId: procId,
+              hookData: Array.isArray(hookData) ? hookData : [],
+              coordinatorUid: studentId,
+              eventName: formData.event_name || formData.title || "Overnight Event Approved",
+              date: formData.event_date || formData.date || new Date().toISOString().split('T')[0],
+            });
+          } else if (procedure.system_hook === "PLACEMENT_BULK") {
+            await processPlacementAttendance({
+              procedureId: procId,
+              hookData: Array.isArray(hookData) ? hookData : [],
+              coordinatorUid: studentId,
+              eventName: formData.event_name || formData.title || "Placement Event Approved",
+              date: formData.test_date || formData.date || new Date().toISOString().split('T')[0],
+            });
+          }
+        }
       }
     }
 

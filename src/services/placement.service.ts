@@ -13,16 +13,18 @@ const generateId = () => Date.now().toString(36) + Math.random().toString(36).su
 
 export async function processPlacementAttendance(payload: {
     procedureId: string;
-    students: any[]; // Changed to any[] for robustness
+    hookData: any[]; // Standardized parameter name
     coordinatorUid: string;
     eventName: string;
     date: string;
+    startTime?: string;
+    endTime?: string;
 }): Promise<Result> {
     try {
-        const { students, coordinatorUid, eventName, date, procedureId } = payload;
+        const { hookData, coordinatorUid, eventName, date, procedureId, startTime, endTime } = payload;
 
         // 1. Robust UID Extraction
-        const rawUids: string[] = students.map((s: any) => {
+        const rawUids: string[] = hookData.map((s: any) => {
             if (typeof s === 'string') return s;
             if (typeof s === 'object' && s !== null) {
                 // Search for UID in object properties (case-insensitive)
@@ -38,8 +40,8 @@ export async function processPlacementAttendance(payload: {
         }).filter(Boolean).map(u => u.toString().trim());
 
         if (rawUids.length === 0) {
-            console.warn(`[PLACEMENT_BULK] No valid UIDs extracted from students array of length ${students.length}.`);
-            console.log(`[PLACEMENT_BULK] First item sample:`, students[0]);
+            console.warn(`[PLACEMENT_BULK] No valid UIDs extracted from hookData array of length ${hookData.length}.`);
+            console.log(`[PLACEMENT_BULK] First item sample:`, hookData[0]);
         }
 
         // Generate both lowercase and uppercase variants for the database query
@@ -124,6 +126,7 @@ export async function processPlacementAttendance(payload: {
             }
 
             const requestId = generateId();
+            console.log(`[PLACEMENT_BULK] Routing request ${requestId} for ${className} (${batchName}) to advisors: ${advisors.map(a => a.mits_uid).join(', ')}`);
             const nowISO = new Date().toISOString();
 
             // Create SQL Request entry
@@ -170,14 +173,18 @@ export async function processPlacementAttendance(payload: {
                 isBulk: true,
                 companyName: eventName,
                 testDate: date,
+                startTime: startTime || "N/A",
+                endTime: endTime || "N/A",
                 studentId: coordinatorUid, // Frontend often uses studentId for requester
-                studentName: coordinatorName, // Matches requests.service.enrichment
+                studentName: "Placement Coordinator", // Identity change
                 requesterRole: `Placement Coordinator (${coordinatorDept})`,
                 className: `${className} (${batchName})`,
                 student_list: classStudents, // Key used by PDF generator
                 formData: {
                     company_name: eventName,
                     test_date: date,
+                    start_time: startTime || "N/A",
+                    end_time: endTime || "N/A",
                     class_name: className,
                     batch_name: batchName,
                     student_list: classStudents

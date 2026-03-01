@@ -27,6 +27,19 @@ export async function approveRequest(req: Request, res: Response) {
   }
 }
 
+export async function rejectRequest(req: Request, res: Response) {
+  try {
+    const result = await FacultyService.rejectRequestService({
+      body: req.body,
+      user: req.user,
+    });
+    return res.status(result.statusCode).json(result);
+  } catch (err) {
+    console.error("rejectRequest controller error:", err);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+}
+
 export const getActedRequests = async (req: Request, res: Response) => {
   try {
     const result = await FacultyService.getActedRequestsService((req as any).user);
