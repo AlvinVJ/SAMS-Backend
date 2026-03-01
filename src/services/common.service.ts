@@ -2,6 +2,7 @@ import { prisma } from "../db/prisma.js";
 import admin from "../config/firebase.js";
 import { firebaseAuth, firestore } from "../config/firebase.js";
 import { processPlacementAttendance } from "./placement.service.js";
+import { processHostellerNotification } from "./hostel.service.js";
 
 
 async function resolveApproversForRole(
@@ -481,46 +482,34 @@ export async function create_request(
     }
 
     // ---------------------------------------------------------
-    // SYSTEM HOOK INTERCEPTION (Special Workflows)
+    // SYSTEM HOOK INTERCEPTION (Special Workflows - START)
     // ---------------------------------------------------------
     const procDoc = await firestore.collection("procedures").doc(procedureId).get();
     const procData = procDoc.data();
+    const hookData = formData.hook_data || formData.student_list || formData.uids || [];
+    console.log(`[SYSTEM_HOOK_START] Hook data to process:`, JSON.stringify(hookData).substring(0, 500), hookData.length > 0 ? "..." : "");
 
-    if (procData?.system_hook === "PLACEMENT_BULK") {
-      // Robust student list extraction from formData
-      let studentListData = formData.student_list ||
-        formData.upload_student_list_csv ||
-        formData.students ||
-        formData.studentList || [];
-
-      if (studentListData.length === 0) {
-        // Fuzzy search for any key containing 'student' and 'list' or just 'students'
-        const fuzzyKey = Object.keys(formData).find(k => {
-          const keyLower = k.toLowerCase();
-          return (keyLower.includes('student') && (keyLower.includes('list') || keyLower.includes('data'))) ||
-            keyLower === 'students' ||
-            keyLower === 'uids';
-        });
-        if (fuzzyKey) studentListData = formData[fuzzyKey];
-      }
-
-      // Final fallback: Find ANY key that contains an array
-      if (!Array.isArray(studentListData) || studentListData.length === 0) {
-        const arrayKey = Object.keys(formData).find(k => Array.isArray(formData[k]) && formData[k].length > 0);
-        if (arrayKey) studentListData = formData[arrayKey];
-      }
-
-      console.log(`[PLACEMENT_BULK_HOOK] Extracted student list from keys: ${Object.keys(formData).join(', ')}. Found ${Array.isArray(studentListData) ? studentListData.length : 0} items.`);
-
+    if (procData?.system_hook === "PLACEMENT_BULK" && procData?.hook_trigger === "START") {
+      console.log(`[PLACEMENT_BULK_HOOK] Executing START trigger for ${procedureId}`);
       return await processPlacementAttendance({
-        procedureId: procedureId,
-        students: Array.isArray(studentListData) ? studentListData : [],
+        procedureId,
+        hookData: Array.isArray(hookData) ? hookData : [],
         coordinatorUid: mits_uid,
-        eventName: formData.event_name || formData.title || formData.company_name || formData.company || formData.event_name_ || Object.entries(formData).find(([k]) => {
-          const kl = k.toLowerCase();
-          return kl.includes('event_name') || kl.includes('company_name') || kl.includes('event_title') || (kl.includes('company') && !kl.includes('list'));
-        })?.[1] || "Placement Event",
-        date: formData.test_date || formData.event_date || formData.event_data || formData.date || new Date().toISOString().split('T')[0],
+        eventName: formData.company_name || formData.event_name || formData.title || "Placement Event",
+        date: formData.test_date || formData.date || new Date().toISOString().split('T')[0],
+        startTime: formData.start_time,
+        endTime: formData.end_time,
+      });
+    }
+
+    if (procData?.system_hook === "OVERNIGHT_HOSTEL" && procData?.hook_trigger === "START") {
+      console.log(`[OVERNIGHT_HOSTEL_HOOK] Executing START trigger for ${procedureId}`);
+      return await processHostellerNotification({
+        procedureId,
+        hookData: Array.isArray(hookData) ? hookData : [],
+        coordinatorUid: mits_uid,
+        eventName: formData.event_name || formData.title || "Hostel Notification",
+        date: formData.event_date || formData.date || new Date().toISOString().split('T')[0],
       });
     }
 

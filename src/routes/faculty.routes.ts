@@ -3,6 +3,7 @@ import { requireRole } from "../middleware/requireRole.js";
 import {
     getRequestsToApprove,
     approveRequest,
+    rejectRequest,
     getActedRequests,
     getDashboardData,
     getProfile,
@@ -24,6 +25,7 @@ facultyRouter.get("/notifications", getNotifications);
 facultyRouter.get("/request_for_approval", getRequestsToApprove);
 facultyRouter.get("/acted_requests", getActedRequests);
 facultyRouter.post("/approve_request", approveRequest);
+facultyRouter.post("/reject_request", rejectRequest);
 
 // Bulk Placement Attendance (Moved from admin to faculty for Placement Coordinators)
 facultyRouter.post(
