@@ -115,7 +115,7 @@ export async function fetch_roles(
 
     const roleFilter = {
       contains: search,
-      //mode: "insensitive" as const,
+      mode: "insensitive" as const,
     };
 
     // 1️⃣ From ClassFaculty
@@ -174,46 +174,25 @@ export async function fetch_roles(
       },
     });
 
-    // 🔹 Normalize + deduplicate
-    const resultMap = new Map<string, any>();
+    // 🔹 Normalize + deduplicate by role_tag
+    const uniqueRoleTags = new Set<string>();
 
-    classFaculty.forEach(r => {
-      if (r.Faculty) {
-        resultMap.set(
-          `${r.Faculty.mits_uid}-${r.role_tag}`,
-          {
-            mits_uid: r.Faculty.mits_uid,
-            name: r.Faculty.name,
-            role_tag: r.role_tag,
-          }
-        );
-      }
-    });
+    classFaculty.forEach(r => r.role_tag && uniqueRoleTags.add(r.role_tag.toUpperCase()));
+    clubAdmins.forEach(r => r.role_tag && uniqueRoleTags.add(r.role_tag.toUpperCase()));
+    clubs.forEach(r => r.coordinator_role_tag && uniqueRoleTags.add(r.coordinator_role_tag.toUpperCase()));
+    roles.forEach(r => r.role_tag && uniqueRoleTags.add(r.role_tag.toUpperCase()));
 
-    for (const r of roles) {
-      for (const m of r.RoleMapping) {
-        const faculty = await prisma.faculty.findUnique({
-          where: { mits_uid: m.mits_uid },
-          select: { name: true }
-        });
-        if (faculty) {
-          resultMap.set(
-            `${m.mits_uid}-${r.role_tag}`,
-            {
-              mits_uid: m.mits_uid,
-              name: faculty.name,
-              role_tag: r.role_tag,
-            }
-          );
-        }
-      }
-    }
+    const data = Array.from(uniqueRoleTags).map(tag => ({
+      mits_uid: "ROLE", // Indicate this is an abstract role
+      name: "Contextual Role Holder",
+      role_tag: tag,
+    }));
 
     return {
       success: true,
       statusCode: 200,
       message: "success",
-      data: Array.from(resultMap.values()),
+      data,
     };
 
   } catch (error) {
