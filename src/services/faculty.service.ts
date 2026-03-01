@@ -1,6 +1,6 @@
 import { prisma } from "../db/prisma.js";
 import { firestore } from "../config/firebase.js";
-import { enrichStudentListInFormData, getUserNameFromUid } from "./requests.service.js";
+import { enrichStudentListInFormData, getUserNameFromUid, getLastLevelRoleTag } from "./requests.service.js";
 
 interface Result {
   success: boolean;
@@ -51,7 +51,7 @@ export async function getRequestsToApproveService(payload: any) {
     if (!selectedRole) {
       return { success: false, statusCode: 400, message: "Role parameter is required" };
     }
-    
+
     const approvals = await prisma.toApprove.findMany({
       where: {
         approverUID: normalizedFacultyUid,
@@ -137,9 +137,7 @@ export async function getRequestsToApproveService(payload: any) {
         students: students,
         isBulk: students !== null,
         approvalHistory: approvalHistory,
-        lastLevelRoleTag: (procedureDef as any)?.approvalLevels?.length > 0
-          ? ((procedureDef as any).approvalLevels[(procedureDef as any).approvalLevels.length - 1].role || (procedureDef as any).approvalLevels[(procedureDef as any).approvalLevels.length - 1].roleIds?.[0] || "Approver")
-          : "Approver"
+        lastLevelRoleTag: data.lastLevelRoleTag || getLastLevelRoleTag(procedureDef)
       });
     }
 
@@ -154,7 +152,7 @@ export async function approveRequestService(payload: any): Promise<Result> {
   try {
     const mits_uid = (payload.user.mits_uid as string);
     const normalizedFacultyUid = mits_uid.trim().toLowerCase();
-    const { requestId, role, comments, nextApproverUid } = payload.body;
+    const { requestId, role, comments } = payload.body;
     const normalizedRole = (role as string)?.trim().toLowerCase();
 
     const requestRef = firestore.collection("requests").doc(requestId);
@@ -191,128 +189,86 @@ export async function approveRequestService(payload: any): Promise<Result> {
       }
     }).catch((e: any) => console.error("ToApprove delete error (likely already gone):", e));
 
-    if (nextApproverUid) {
-      // -------------------------------------------------------------
-      // CASE B: Optional Ad-hoc Forwarding
-      // -------------------------------------------------------------
-      const nextLevelNum = Number((currentLevel + 0.01).toFixed(2));
-      data.current_level = nextLevelNum;
+    const approvalsDone = levelBlock.decisions.filter((d: any) => d.decision === "APPROVED").length;
+    if (approvalsDone >= levelBlock.required_approvals) {
+      levelBlock.net_status = "APPROVED";
 
-      approvalProgress.push({
-        level: nextLevelNum,
-        net_status: "PENDING",
-        required_approvals: 1,
-        decisions: [{ mits_uid: nextApproverUid }],
-        isAdhoc: true, // Marker for ad-hoc step
-        forwardedBy: normalizedFacultyUid
+      // 2. Clear remaining action items for this request at the current level (if any)
+      await prisma.toApprove.deleteMany({
+        where: { req_id: requestId, approvalLevel: currentLevel }
       });
 
-      // Populate ToApprove for the single ad-hoc approver using upsert to avoid unique constraint violations
-      await prisma.toApprove.upsert({
-        where: {
-          req_id_approverUID: {
-            req_id: requestId,
-            approverUID: nextApproverUid
-          }
-        },
-        create: {
-          req_id: requestId,
-          approverUID: nextApproverUid,
-          approvalLevel: nextLevelNum,
-          approvalType: "General"
-        },
-        update: {
-          approvalLevel: nextLevelNum,
-          approvalType: "General"
+      const procSnap = await firestore.collection("procedures").doc(procId).get();
+      const procedure = procSnap.data();
+      const nextLevelNum = currentLevel + 1;
+      const nextLevelDef = procedure?.approvalLevels?.find((l: any) => l.level === nextLevelNum);
+
+      if (nextLevelDef) {
+        data.current_level = nextLevelNum;
+        let nextApprovers: string[] = [];
+        for (const roleTag of (nextLevelDef.roleIds || [nextLevelDef.role])) {
+          const uids = await resolveApproversForRole(roleTag, studentId);
+          nextApprovers.push(...uids);
         }
-      });
-    } else {
-      // -------------------------------------------------------------
-      // CASE A: Standard Procedure Progression
-      // -------------------------------------------------------------
-      const approvalsDone = levelBlock.decisions.filter((d: any) => d.decision === "APPROVED").length;
-      if (approvalsDone >= levelBlock.required_approvals) {
-        levelBlock.net_status = "APPROVED";
-
-        // Clear remaining action items for this request at the current level (if any)
-        await prisma.toApprove.deleteMany({
-          where: { req_id: requestId, approvalLevel: currentLevel }
+        nextApprovers = [...new Set(nextApprovers)];
+        approvalProgress.push({
+          level: nextLevelNum,
+          net_status: "PENDING",
+          required_approvals: nextLevelDef.allMustApprove ? nextApprovers.length : (nextLevelDef.minApprovals || 1),
+          decisions: nextApprovers.map(uid => ({ mits_uid: uid }))
         });
 
-        const procSnap = await firestore.collection("procedures").doc(procId).get();
-        const procedure = procSnap.data();
+        // 3. Populate ToApprove table for next level approvers
+        const nextLevelRole = (nextLevelDef.roleIds || [nextLevelDef.role])?.[0] || "Approver";
+        const toApproveData = nextApprovers.map(uid => ({
+          req_id: requestId,
+          approverUID: uid,
+          approvalLevel: nextLevelNum,
+          approvalType: nextLevelRole
+        }));
 
-        // Use Math.floor + 1 to resume even from an ad-hoc step (e.g., 1.01 -> 2)
-        const nextLevelNum = Math.floor(currentLevel) + 1;
-        const nextLevelDef = procedure?.approvalLevels?.find((l: any) => l.level === nextLevelNum);
-
-        if (nextLevelDef) {
-          data.current_level = nextLevelNum;
-          let nextApprovers: string[] = [];
-          for (const roleTag of (nextLevelDef.roleIds || [nextLevelDef.role])) {
-            const uids = await resolveApproversForRole(roleTag, studentId);
-            nextApprovers.push(...uids);
-          }
-          nextApprovers = [...new Set(nextApprovers)];
-          approvalProgress.push({
-            level: nextLevelNum,
-            net_status: "PENDING",
-            required_approvals: nextLevelDef.allMustApprove ? nextApprovers.length : (nextLevelDef.minApprovals || 1),
-            decisions: nextApprovers.map(uid => ({ mits_uid: uid }))
+        if (toApproveData.length > 0) {
+          await prisma.toApprove.createMany({
+            data: toApproveData,
+            skipDuplicates: true
           });
 
-          // Populate ToApprove table for next level approvers
-          const nextLevelRole = (nextLevelDef.roleIds || [nextLevelDef.role])?.[0] || "Approver";
-          const toApproveData = nextApprovers.map(uid => ({
-            req_id: requestId,
-            approverUID: uid,
-            approvalLevel: nextLevelNum,
-            approvalType: nextLevelRole
-          }));
-
-          if (toApproveData.length > 0) {
-            await prisma.toApprove.createMany({
-              data: toApproveData,
-              skipDuplicates: true
+          // Sync Analytics pending for next level
+          try {
+            const roleRow = await prisma.roles.findFirst({
+              where: { role_tag: { equals: nextLevelRole, mode: 'insensitive' } }
             });
-
-            // Sync Analytics pending for next level
-            try {
-              const roleRow = await prisma.roles.findFirst({
-                where: { role_tag: { equals: nextLevelRole, mode: "insensitive" } }
-              });
-              if (roleRow) {
-                for (const uid of nextApprovers) {
-                  await prisma.analytics.upsert({
-                    where: { mits_uid_role_id: { mits_uid: uid, role_id: roleRow.role_id } },
-                    create: { mits_uid: uid, role_id: roleRow.role_id, pending: 1, approved: 0, rejected: 0 },
-                    update: { pending: { increment: 1 } }
-                  });
-                }
+            if (roleRow) {
+              for (const uid of nextApprovers) {
+                await prisma.analytics.upsert({
+                  where: { mits_uid_role_id: { mits_uid: uid, role_id: roleRow.role_id } },
+                  create: { mits_uid: uid, role_id: roleRow.role_id, pending: 1, approved: 0, rejected: 0 },
+                  update: { pending: { increment: 1 } }
+                });
               }
-            } catch (e) {
-              console.error("Failed to update next level Analytics pending counts:", e);
             }
+          } catch (e) {
+            console.error("Failed to update next level Analytics pending counts:", e);
           }
-        } else {
-          data.status = "APPROVED";
-          await prisma.requests.update({ where: { req_id: requestId }, data: { status: 1 } });
         }
+      } else {
+        data.status = "APPROVED";
+        await prisma.requests.update({ where: { req_id: requestId }, data: { status: 1 } });
       }
     }
 
     await requestRef.update({
       approval_progress: approvalProgress,
       current_level: data.current_level,
-      status: data.status || "PENDING",
+      status: data.status,
       last_updated_at: new Date().toISOString()
     });
 
-    // Sync to SQL Analytics table for the approver who just acted
+    // Sync to SQL Analytics table
     try {
       if (normalizedRole) {
         const roleRow = await prisma.roles.findFirst({
-          where: { role_tag: { equals: normalizedRole, mode: "insensitive" } }
+          where: { role_tag: { equals: normalizedRole, mode: 'insensitive' } }
         });
         if (roleRow) {
           await prisma.analytics.upsert({
@@ -497,9 +453,7 @@ export async function getActedRequestsService(user: any): Promise<Result> {
           department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
           roleTag: (procDoc.data()?.approvalLevels?.find((l: any) => l.level === data.current_level)?.role || "Approver"),
           approvalHistory: approvalHistory,
-          lastLevelRoleTag: (procDoc.data() as any)?.approvalLevels?.length > 0
-            ? ((procDoc.data() as any).approvalLevels[(procDoc.data() as any).approvalLevels.length - 1].role || (procDoc.data() as any).approvalLevels[(procDoc.data() as any).approvalLevels.length - 1].roleIds?.[0] || "Approver")
-            : "Approver"
+          lastLevelRoleTag: data.lastLevelRoleTag || getLastLevelRoleTag(procDoc.data())
         });
       }
     }

@@ -32,6 +32,17 @@ export async function resolveRequestStatus(req: any, procData: any, currentLevel
   return { text: `Pending ${roleName}`, color: "warning" };
 }
 
+// Helper: Get robust last level role tag
+export function getLastLevelRoleTag(procData: any): string {
+  if (!procData?.approvalLevels || procData.approvalLevels.length === 0) return "Principal";
+
+  // Sort by level descending to find the actual last level by number
+  const levels = [...procData.approvalLevels].sort((a: any, b: any) => b.level - a.level);
+  const lastLevel = levels[0];
+
+  return lastLevel?.role || lastLevel?.roleIds?.[0] || "Principal";
+}
+
 // Helper: Resolve Approvers
 async function resolveApproversForRole(roleTag: string, requesterUid: string): Promise<string[]> {
   const normalizedTag = roleTag.toLowerCase();
@@ -265,6 +276,7 @@ export async function createRequest(payload: { body: any; user: any }): Promise<
       updatedAt: nowISO,
       last_updated_at: nowISO,
       formData: formData,
+      lastLevelRoleTag: getLastLevelRoleTag(procDoc.data()),
       timeline: [{ action: "SUBMITTED", by: studentName, role: "STUDENT", timestamp: nowISO }],
       approval_progress: approval_progress
     });
@@ -291,7 +303,10 @@ export async function getMyRequests(user: any): Promise<Result> {
     for (const req of requests) {
       const userData = await prisma.userAccount.findUnique({
         where: { mits_uid: req.created_by },
-        include: { Student: { include: { Classes: { include: { Departments: true } } } } }
+        include: {
+          Student: { include: { Classes: { include: { Departments: true } } } },
+          Faculty: { include: { Departments: true } }
+        }
       });
 
       formatted.push({
@@ -301,9 +316,10 @@ export async function getMyRequests(user: any): Promise<Result> {
         status: req.status,
         status_text: req.status === 1 ? "Approved" : (req.status === 2 ? "Rejected" : (req.status === 3 ? "Withdrawn" : "Pending")),
         color: req.status === 1 ? "success" : (req.status === 2 ? "error" : (req.status === 3 ? "withdrawn" : "warning")),
-        studentName: userData?.Student?.name || "Unknown",
+        studentName: userData?.Student?.name || userData?.Faculty?.name || "Unknown",
         studentId: req.created_by,
-        department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
+        department: userData?.Student?.Classes?.Departments?.dept_name || userData?.Faculty?.Departments?.dept_name || "N/A",
+        lastLevelRoleTag: (req as any).lastLevelRoleTag || "Principal",
         is_resolved: false,
       });
     }
@@ -357,13 +373,13 @@ export async function getRequestDetails(requestId: string): Promise<Result> {
 
     const userData = await prisma.userAccount.findUnique({
       where: { mits_uid: req.created_by },
-      include: { Student: { include: { Classes: { include: { Departments: true } } } } }
+      include: {
+        Student: { include: { Classes: { include: { Departments: true } } } },
+        Faculty: { include: { Departments: true } }
+      }
     });
 
-    const lastLevel = (procData as any)?.approvalLevels?.length > 0
-      ? (procData as any).approvalLevels[(procData as any).approvalLevels.length - 1]
-      : null;
-    const lastLevelRoleTag = lastLevel?.role || lastLevel?.roleIds?.[0] || "Approver";
+    const lastLevelRoleTag = data.lastLevelRoleTag || getLastLevelRoleTag(procData);
 
     const sourceData = data.formData || data.form_response;
     let students = null;
@@ -392,9 +408,9 @@ export async function getRequestDetails(requestId: string): Promise<Result> {
         formData: data.formData || {},
         students: students,
         isBulk: students !== null,
-        studentName: userData?.Student?.name || data.studentName || "Unknown",
+        studentName: userData?.Student?.name || userData?.Faculty?.name || data.studentName || "Unknown",
         studentId: req.created_by,
-        department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
+        department: userData?.Student?.Classes?.Departments?.dept_name || userData?.Faculty?.Departments?.dept_name || "N/A",
         lastLevelRoleTag,
         is_resolved: true,
       }
@@ -476,7 +492,8 @@ export async function withdrawRequest(requestId: string, user: any): Promise<Res
     });
 
     if (!request) return { success: false, statusCode: 404, message: "Request not found" };
-    if (request.created_by !== userAccount.mits_uid) {
+    const emailPrefix = user.email.split("@")[0];
+    if (request.created_by !== userAccount.mits_uid && request.created_by !== emailPrefix) {
       return { success: false, statusCode: 403, message: "Not authorized to withdraw this request" };
     }
     if (request.status !== 0) {
@@ -536,3 +553,4 @@ export async function withdrawRequest(requestId: string, user: any): Promise<Res
     return { success: false, statusCode: 500, message: "Internal server error" };
   }
 }
+

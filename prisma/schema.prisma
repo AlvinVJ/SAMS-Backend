@@ -110,7 +110,6 @@ model Faculty {
   ClassFaculty      ClassFaculty[]
   DepartmentFaculty DepartmentFaculty?
   Departments       Departments        @relation(fields: [department_id], references: [dept_id])
-  UserAccount       UserAccount        @relation(fields: [mits_uid], references: [mits_uid])
 
   @@index([is_active])
   @@index([department_id])
@@ -138,27 +137,25 @@ model ProcedureVisibility {
 }
 
 model Requests {
-  req_id      String      @id
-  proc_id     String
-  created_by  String
-  created_at  DateTime    @default(now())
-  status      Int
-  UserAccount UserAccount @relation(fields: [created_by], references: [mits_uid])
-  Procedures  Procedures  @relation(fields: [proc_id], references: [proc_id])
-  ToApprove   ToApprove[]
+  req_id     String      @id
+  proc_id    String
+  created_by String
+  created_at DateTime    @default(now())
+  status     Int
+  Procedures Procedures  @relation(fields: [proc_id], references: [proc_id])
+  ToApprove  ToApprove[]
 
   @@index([created_by])
   @@index([proc_id])
 }
 
 model RoleMapping {
-  role_mapping_id Int         @id
+  role_mapping_id Int       @id
   role_id         Int
   mits_uid        String
-  is_active       Boolean     @default(true)
+  is_active       Boolean   @default(true)
   deleted_at      DateTime?
-  UserAccount     UserAccount @relation(fields: [mits_uid], references: [mits_uid])
-  Roles           Roles       @relation(fields: [role_id], references: [role_id])
+  Roles           Roles     @relation(fields: [role_id], references: [role_id])
 
   @@index([is_active])
   @@index([mits_uid])
@@ -181,37 +178,30 @@ model Roles {
 }
 
 model Student {
-  mits_uid    String      @id
-  name        String
-  batch_id    Int
-  class_id    Int
-  hosteller   Boolean
-  gender      String?
-  phone       String?     @unique
-  is_active   Boolean     @default(true)
-  deleted_at  DateTime?
-  Batches     Batches     @relation(fields: [batch_id], references: [batch_id])
-  Classes     Classes     @relation(fields: [class_id], references: [class_id])
-  UserAccount UserAccount @relation(fields: [mits_uid], references: [mits_uid])
+  mits_uid   String    @id
+  name       String
+  batch_id   Int
+  class_id   Int
+  hosteller  Boolean
+  gender     String?
+  phone      String?   @unique
+  is_active  Boolean   @default(true)
+  deleted_at DateTime?
+  Batches    Batches   @relation(fields: [batch_id], references: [batch_id])
+  Classes    Classes   @relation(fields: [class_id], references: [class_id])
 
   @@index([is_active])
   @@index([class_id])
 }
 
 model UserAccount {
-  mits_uid    String        @id
-  auth_uid    String        @unique
-  user_type   Int
-  is_active   Boolean       @default(true)
-  deleted_at  DateTime?
-  email       String?       @unique
-  FCMTokens   FCMTokens[]
-  Faculty     Faculty?
-  Requests    Requests[]
-  RoleMapping RoleMapping[]
-  Student     Student?
-  ToApprove   ToApprove[]
-  UserTypes   UserTypes     @relation(fields: [user_type], references: [user_type_id])
+  mits_uid   String    @id
+  auth_uid   String    @unique
+  user_type  Int
+  is_active  Boolean   @default(true)
+  deleted_at DateTime?
+  email      String?   @unique
+  UserTypes  UserTypes @relation(fields: [user_type], references: [user_type_id])
 
   @@index([is_active])
   @@index([user_type])
@@ -228,12 +218,11 @@ model UserTypes {
 
 model ToApprove {
   req_id        String
-  created_at    DateTime    @default(now()) @db.Timestamptz(6)
+  created_at    DateTime @default(now()) @db.Timestamptz(6)
   approverUID   String
-  approvalLevel Decimal?    @db.Decimal
+  approvalLevel Decimal? @db.Decimal
   approvalType  String?
-  UserAccount   UserAccount @relation(fields: [approverUID], references: [mits_uid], onDelete: NoAction, onUpdate: NoAction)
-  Requests      Requests    @relation(fields: [req_id], references: [req_id], onDelete: NoAction, onUpdate: NoAction)
+  Requests      Requests @relation(fields: [req_id], references: [req_id], onDelete: NoAction, onUpdate: NoAction)
 
   @@id([req_id, approverUID])
 }
@@ -251,11 +240,10 @@ model DepartmentFaculty {
 }
 
 model FCMTokens {
-  mits_uid    String
-  session_id  String
-  fcm_token   String
-  created_at  DateTime    @default(now())
-  UserAccount UserAccount @relation(fields: [mits_uid], references: [mits_uid], onDelete: Cascade)
+  mits_uid   String
+  session_id String
+  fcm_token  String
+  created_at DateTime @default(now())
 
   @@id([mits_uid, session_id])
   @@index([mits_uid])

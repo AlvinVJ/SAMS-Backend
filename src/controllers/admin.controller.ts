@@ -283,7 +283,7 @@ export async function bulkImportAcademic(req: Request, res: Response) {
     const classes: any[] = [];
 
     fs.createReadStream(req.file.path)
-      .pipe(parse({ headers: true }))
+      .pipe(parse({ headers: true, trim: true }))
       .on("data", (row) => {
         if (row.type === "department") {
           departments.push(row);
@@ -317,7 +317,7 @@ export async function bulkImportUsers(req: Request, res: Response) {
     const users: any[] = [];
 
     fs.createReadStream(req.file.path)
-      .pipe(parse({ headers: true }))
+      .pipe(parse({ headers: true, trim: true }))
       .on("data", (row) => {
         users.push(row);
       })
@@ -334,6 +334,85 @@ export async function bulkImportUsers(req: Request, res: Response) {
   }
 }
 
+export async function bulkImportStudents(req: Request, res: Response) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "No file uploaded" });
+    }
+
+    const users: any[] = [];
+
+    fs.createReadStream(req.file.path)
+      .pipe(parse({ headers: true, trim: true }))
+      .on("data", (row) => {
+        users.push(row);
+      })
+      .on("end", async () => {
+        const result = await AdminService.bulkImportUsersService({
+          users,
+          defaultUserType: "STUDENT"
+        });
+        fs.unlinkSync(req.file!.path); // Clean up
+        return res.status(result.statusCode).json(result);
+      });
+  } catch (error) {
+    console.error("bulkImportStudents error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+}
+
+export async function bulkImportFaculty(req: Request, res: Response) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "No file uploaded" });
+    }
+
+    const users: any[] = [];
+
+    fs.createReadStream(req.file.path)
+      .pipe(parse({ headers: true, trim: true }))
+      .on("data", (row) => {
+        users.push(row);
+      })
+      .on("end", async () => {
+        const result = await AdminService.bulkImportUsersService({
+          users,
+          defaultUserType: "FACULTY"
+        });
+        fs.unlinkSync(req.file!.path); // Clean up
+        return res.status(result.statusCode).json(result);
+      });
+  } catch (error) {
+    console.error("bulkImportFaculty error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+}
+
+export async function bulkImportClubs(req: Request, res: Response) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "No file uploaded" });
+    }
+
+    const clubs: any[] = [];
+
+    fs.createReadStream(req.file.path)
+      .pipe(parse({ headers: true, trim: true }))
+      .on("data", (row) => {
+        clubs.push(row);
+      })
+      .on("end", async () => {
+        const result = await AdminService.bulkImportClubsService({ clubs });
+        fs.unlinkSync(req.file!.path); // Clean up
+        return res.status(result.statusCode).json(result);
+      });
+  } catch (error) {
+    console.error("bulkImportClubs error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+}
+
+
 export async function bulkImportPlacementAttendance(req: Request, res: Response) {
   try {
     if (!req.file) {
@@ -348,7 +427,7 @@ export async function bulkImportPlacementAttendance(req: Request, res: Response)
     const students: any[] = [];
 
     fs.createReadStream(req.file.path)
-      .pipe(parse({ headers: true }))
+      .pipe(parse({ headers: true, trim: true }))
       .on("data", (row) => {
         if (row.mits_uid) {
           students.push(row);
@@ -400,7 +479,7 @@ export async function assignClassRole(req: Request, res: Response) {
   return res.status(result.statusCode).json(result);
 }
 
-export async function removeClassRole(req: Request<{ class_id:string, mits_uid: string, role_tag: string}>, res: Response) {
+export async function removeClassRole(req: Request<{ class_id: string, mits_uid: string, role_tag: string }>, res: Response) {
   const { class_id, mits_uid, role_tag } = req.params;
   if (!class_id || !mits_uid || !role_tag) {
     return res.status(400).json({ success: false, message: "class_id, mits_uid, and role_tag are required" });

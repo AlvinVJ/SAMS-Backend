@@ -240,29 +240,39 @@ export async function signup(payload: BasicPayload): Promise<BasicResult> {
     });
 
     if (!existingUser) {
-      console.log("Creating new UserAccount for:", emailPrefix);
-      let userType: number | null;
-      let role = payload.user.role;
+      console.log("Checking for pre-imported profile for:", emailPrefix);
 
-      if (role === "admin") userType = 2;
-      else if (role === "faculty") userType = 1;
-      else if (role === "student") userType = 0; // student
-      else userType = null;
+      // Look for profile in Student or Faculty tables
+      const studentProfile = await prisma.student.findUnique({ where: { mits_uid: emailPrefix } });
+      const facultyProfile = await prisma.faculty.findUnique({ where: { mits_uid: emailPrefix } });
 
-
-      if (userType == null) {
+      if (!studentProfile && !facultyProfile) {
         return {
           success: false,
           statusCode: 403,
-          message: "invalid credentials initialized in whitelist table",
+          message: "User not found in system. Please contact administrator.",
         };
       }
+
+      // Determine user type ID based on profile and Firestore role
+      const userTypeTag = isStudent ? "STUDENT" : (role === "admin" ? "ADMIN" : "FACULTY");
+      const userType = await prisma.userTypes.findUnique({ where: { user_type_tag: userTypeTag } });
+
+      if (!userType) {
+        return {
+          success: false,
+          statusCode: 500,
+          message: "User type configuration error",
+        };
+      }
+
+      console.log("Creating new UserAccount for:", emailPrefix);
       await prisma.userAccount.create({
         data: {
           auth_uid: payload.user.uid,
           mits_uid: emailPrefix,
           email: payload.user.email,
-          user_type: userType
+          user_type: userType.user_type_id
         },
       });
       return {
@@ -278,11 +288,15 @@ export async function signup(payload: BasicPayload): Promise<BasicResult> {
     }
     else {
       console.log("Existing user found. Current email:", existingUser.email, "New email:", payload.user.email);
-      if (existingUser.email !== payload.user.email) {
-        console.log("Updating email for user:", emailPrefix);
+      // Link Google UID / update email if it was a temp pre-import account or email changed
+      if (existingUser.email !== payload.user.email || existingUser.auth_uid !== payload.user.uid) {
+        console.log("Updating account for user:", emailPrefix);
         await prisma.userAccount.update({
           where: { mits_uid: emailPrefix },
-          data: { email: payload.user.email },
+          data: {
+            email: payload.user.email,
+            auth_uid: payload.user.uid
+          },
         });
       }
       return {
@@ -473,17 +487,40 @@ export async function create_request(
     const procData = procDoc.data();
 
     if (procData?.system_hook === "PLACEMENT_BULK") {
-      // Find the student list in formData (it could be named 'student_list' or something like 'upload_student_list_csv')
-      const studentListData = formData.student_list ||
+      // Robust student list extraction from formData
+      let studentListData = formData.student_list ||
         formData.upload_student_list_csv ||
-        Object.entries(formData).find(([k]) => k.includes('student_list'))?.[1] || [];
+        formData.students ||
+        formData.studentList || [];
+
+      if (studentListData.length === 0) {
+        // Fuzzy search for any key containing 'student' and 'list' or just 'students'
+        const fuzzyKey = Object.keys(formData).find(k => {
+          const keyLower = k.toLowerCase();
+          return (keyLower.includes('student') && (keyLower.includes('list') || keyLower.includes('data'))) ||
+            keyLower === 'students' ||
+            keyLower === 'uids';
+        });
+        if (fuzzyKey) studentListData = formData[fuzzyKey];
+      }
+
+      // Final fallback: Find ANY key that contains an array
+      if (!Array.isArray(studentListData) || studentListData.length === 0) {
+        const arrayKey = Object.keys(formData).find(k => Array.isArray(formData[k]) && formData[k].length > 0);
+        if (arrayKey) studentListData = formData[arrayKey];
+      }
+
+      console.log(`[PLACEMENT_BULK_HOOK] Extracted student list from keys: ${Object.keys(formData).join(', ')}. Found ${Array.isArray(studentListData) ? studentListData.length : 0} items.`);
 
       return await processPlacementAttendance({
         procedureId: procedureId,
-        students: studentListData,
+        students: Array.isArray(studentListData) ? studentListData : [],
         coordinatorUid: mits_uid,
-        eventName: formData.event_name || formData.title || formData.event_name_ || Object.entries(formData).find(([k]) => k.includes('event_name'))?.[1] || "Placement Event",
-        date: formData.event_date || formData.event_data || formData.date || new Date().toISOString().split('T')[0],
+        eventName: formData.event_name || formData.title || formData.company_name || formData.company || formData.event_name_ || Object.entries(formData).find(([k]) => {
+          const kl = k.toLowerCase();
+          return kl.includes('event_name') || kl.includes('company_name') || kl.includes('event_title') || (kl.includes('company') && !kl.includes('list'));
+        })?.[1] || "Placement Event",
+        date: formData.test_date || formData.event_date || formData.event_data || formData.date || new Date().toISOString().split('T')[0],
       });
     }
 
