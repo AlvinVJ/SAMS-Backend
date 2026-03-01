@@ -3,19 +3,20 @@ import { prisma } from "../db/prisma.js";
 export async function getStudentProfile(auth_uid: string) {
   const userAccount = await prisma.userAccount.findUnique({
     where: { auth_uid },
+  });
+  if (!userAccount) return null;
+
+  const student = await prisma.student.findUnique({
+    where: { mits_uid: userAccount.mits_uid },
     include: {
-      Student: {
+      Classes: {
         include: {
-          Classes: {
-            include: {
-              Departments: true,
-            },
-          },
+          Departments: true,
         },
       },
     },
   });
-  return userAccount;
+  return { ...userAccount, Student: student };
 }
 
 export async function getNotifications(mits_uid: string) {

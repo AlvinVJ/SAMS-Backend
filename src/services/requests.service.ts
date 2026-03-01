@@ -12,12 +12,17 @@ const generateId = () => Date.now().toString(36) + Math.random().toString(36).su
 
 // Helper: Resolve Name from UID
 export async function getUserNameFromUid(uid: string): Promise<string> {
-  const account = await prisma.userAccount.findUnique({
+  const faculty = await prisma.faculty.findUnique({
     where: { mits_uid: uid },
-    include: { Faculty: true, Student: true },
+    select: { name: true },
   });
-  if (account?.Faculty?.name) return account.Faculty.name;
-  if (account?.Student?.name) return account.Student.name;
+  if (faculty?.name) return faculty.name;
+
+  const student = await prisma.student.findUnique({
+    where: { mits_uid: uid },
+    select: { name: true },
+  });
+  if (student?.name) return student.name;
   return "Unknown User";
 }
 
@@ -301,13 +306,14 @@ export async function getMyRequests(user: any): Promise<Result> {
     const formatted = [];
 
     for (const req of requests) {
-      const userData = await prisma.userAccount.findUnique({
+      const student = await prisma.student.findUnique({
         where: { mits_uid: req.created_by },
-        include: {
-          Student: { include: { Classes: { include: { Departments: true } } } },
-          Faculty: { include: { Departments: true } }
-        }
+        include: { Classes: { include: { Departments: true } } }
       });
+      const faculty = !student ? await prisma.faculty.findUnique({
+        where: { mits_uid: req.created_by },
+        include: { Departments: true }
+      }) : null;
 
       formatted.push({
         req_id: req.req_id,
@@ -316,9 +322,9 @@ export async function getMyRequests(user: any): Promise<Result> {
         status: req.status,
         status_text: req.status === 1 ? "Approved" : (req.status === 2 ? "Rejected" : (req.status === 3 ? "Withdrawn" : "Pending")),
         color: req.status === 1 ? "success" : (req.status === 2 ? "error" : (req.status === 3 ? "withdrawn" : "warning")),
-        studentName: userData?.Student?.name || userData?.Faculty?.name || "Unknown",
+        studentName: student?.name || faculty?.name || "Unknown",
         studentId: req.created_by,
-        department: userData?.Student?.Classes?.Departments?.dept_name || userData?.Faculty?.Departments?.dept_name || "N/A",
+        department: student?.Classes?.Departments?.dept_name || faculty?.Departments?.dept_name || "N/A",
         lastLevelRoleTag: (req as any).lastLevelRoleTag || "Principal",
         is_resolved: false,
       });
@@ -371,13 +377,14 @@ export async function getRequestDetails(requestId: string): Promise<Result> {
       }
     }
 
-    const userData = await prisma.userAccount.findUnique({
+    const student = await prisma.student.findUnique({
       where: { mits_uid: req.created_by },
-      include: {
-        Student: { include: { Classes: { include: { Departments: true } } } },
-        Faculty: { include: { Departments: true } }
-      }
+      include: { Classes: { include: { Departments: true } } }
     });
+    const faculty = !student ? await prisma.faculty.findUnique({
+      where: { mits_uid: req.created_by },
+      include: { Departments: true }
+    }) : null;
 
     const lastLevelRoleTag = data.lastLevelRoleTag || getLastLevelRoleTag(procData);
 
@@ -408,9 +415,9 @@ export async function getRequestDetails(requestId: string): Promise<Result> {
         formData: data.formData || {},
         students: students,
         isBulk: students !== null,
-        studentName: userData?.Student?.name || userData?.Faculty?.name || data.studentName || "Unknown",
+        studentName: student?.name || faculty?.name || data.studentName || "Unknown",
         studentId: req.created_by,
-        department: userData?.Student?.Classes?.Departments?.dept_name || userData?.Faculty?.Departments?.dept_name || "N/A",
+        department: student?.Classes?.Departments?.dept_name || faculty?.Departments?.dept_name || "N/A",
         lastLevelRoleTag,
         is_resolved: true,
       }

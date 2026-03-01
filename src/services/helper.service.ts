@@ -1,17 +1,17 @@
 import { prisma } from "../db/prisma.js";
 import admin from "../config/firebase.js";
-import {firebaseAuth, firestore} from "../config/firebase.js";
+import { firebaseAuth, firestore } from "../config/firebase.js";
 
 interface BasicResult {
-    success: boolean;
-    statusCode: number;
-    message: string;
-    data?: any;
+  success: boolean;
+  statusCode: number;
+  message: string;
+  data?: any;
 
 }
 interface BasicPayload {
-    user: {uid: string, email: string, role: string, mits_uid: string}
-    body: any;
+  user: { uid: string, email: string, role: string, mits_uid: string }
+  body: any;
 }
 
 // export async function fetch_roles(
@@ -157,7 +157,7 @@ export async function fetch_roles(
       },
     });
 
-    // 4️⃣ From Roles → RoleMapping → UserAccount → Faculty
+    // 4️⃣ From Roles → RoleMapping → Faculty
     const roles = await prisma.roles.findMany({
       where: {
         role_tag: roleFilter,
@@ -168,14 +168,7 @@ export async function fetch_roles(
         RoleMapping: {
           where: { is_active: true },
           select: {
-            UserAccount: {
-              select: {
-                mits_uid: true,
-                Faculty: {
-                  select: { name: true },
-                },
-              },
-            },
+            mits_uid: true,
           },
         },
       },
@@ -197,20 +190,24 @@ export async function fetch_roles(
       }
     });
 
-    roles.forEach(r => {
-      r.RoleMapping.forEach(m => {
-        if (m.UserAccount?.Faculty) {
+    for (const r of roles) {
+      for (const m of r.RoleMapping) {
+        const faculty = await prisma.faculty.findUnique({
+          where: { mits_uid: m.mits_uid },
+          select: { name: true }
+        });
+        if (faculty) {
           resultMap.set(
-            `${m.UserAccount.mits_uid}-${r.role_tag}`,
+            `${m.mits_uid}-${r.role_tag}`,
             {
-              mits_uid: m.UserAccount.mits_uid,
-              name: m.UserAccount.Faculty.name,
+              mits_uid: m.mits_uid,
+              name: faculty.name,
               role_tag: r.role_tag,
             }
           );
         }
-      });
-    });
+      }
+    }
 
     return {
       success: true,

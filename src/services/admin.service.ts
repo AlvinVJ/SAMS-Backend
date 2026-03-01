@@ -754,59 +754,73 @@ export async function deleteClass(class_id: number): Promise<Result> {
 
 export async function getUsersService(search?: string): Promise<Result> {
   try {
-    const whereClause: any = { deleted_at: null };
+    const whereClause: any = { is_active: true, deleted_at: null };
 
     if (search) {
+      const studentMatches = await prisma.student.findMany({
+        where: {
+          OR: [
+            { name: { contains: search, mode: 'insensitive' } },
+            { mits_uid: { contains: search, mode: 'insensitive' } }
+          ]
+        },
+        select: { mits_uid: true }
+      });
+      const facultyMatches = await prisma.faculty.findMany({
+        where: {
+          OR: [
+            { name: { contains: search, mode: 'insensitive' } },
+            { mits_uid: { contains: search, mode: 'insensitive' } }
+          ]
+        },
+        select: { mits_uid: true }
+      });
+      const searchUids = [...studentMatches.map(s => s.mits_uid), ...facultyMatches.map(f => f.mits_uid)];
       whereClause.OR = [
-        { mits_uid: { contains: search, mode: 'insensitive' } },
-        { email: { contains: search, mode: 'insensitive' } },
-        {
-          Student: {
-            name: { contains: search, mode: 'insensitive' },
-          },
-        },
-        {
-          Faculty: {
-            name: { contains: search, mode: 'insensitive' },
-          },
-        },
+        { mits_uid: { in: searchUids } },
+        { email: { contains: search, mode: 'insensitive' } }
       ];
     }
 
     const users = await prisma.userAccount.findMany({
       where: whereClause,
       include: {
-        Faculty: {
-          include: {
-            Departments: true,
-          },
-        },
-        Student: {
-          include: {
-            Classes: {
-              include: {
-                Departments: true,
-              },
-            },
-            Batches: true,
-          },
-        },
-        RoleMapping: {
-          where: { is_active: true },
-          include: {
-            Roles: true,
-          },
-        },
         UserTypes: true,
       },
-      orderBy: { mits_uid: 'asc' },
+      orderBy: { mits_uid: 'asc' }
     });
+
+    const formatted = [];
+    for (const user of users) {
+      const faculty = await prisma.faculty.findUnique({
+        where: { mits_uid: user.mits_uid },
+        include: { Departments: true }
+      });
+      const student = await prisma.student.findUnique({
+        where: { mits_uid: user.mits_uid },
+        include: {
+          Classes: { include: { Departments: true } },
+          Batches: true
+        }
+      });
+      const roleMappings = await prisma.roleMapping.findMany({
+        where: { mits_uid: user.mits_uid, is_active: true },
+        include: { Roles: true }
+      });
+
+      formatted.push({
+        ...user,
+        Faculty: faculty,
+        Student: student,
+        RoleMapping: roleMappings
+      });
+    }
 
     return {
       success: true,
       statusCode: 200,
-      message: "Users fetched successfully",
-      data: users,
+      message: "Users fetched",
+      data: formatted,
     };
   } catch (error) {
     console.error("getUsersService error:", error);
@@ -1261,13 +1275,16 @@ export async function getGlobalRequestsService(): Promise<Result> {
           }
         }
 
-        const userData = await prisma.userAccount.findUnique({
+        const student = await prisma.student.findUnique({
           where: { mits_uid: req.created_by },
           include: {
-            Student: { include: { Classes: { include: { Departments: true } } } },
-            Faculty: { include: { Departments: true } }
+            Classes: { include: { Departments: true } }
           }
         });
+        const faculty = !student ? await prisma.faculty.findUnique({
+          where: { mits_uid: req.created_by },
+          include: { Departments: true }
+        }) : null;
 
         formatted.push({
           req_id: req.req_id,
@@ -1280,9 +1297,9 @@ export async function getGlobalRequestsService(): Promise<Result> {
           total_levels,
           approvalHistory,
           formData: data.formData || {},
-          studentName: userData?.Student?.name || userData?.Faculty?.name || data.studentName || "Unknown",
+          studentName: student?.name || faculty?.name || data.studentName || "Unknown",
           studentId: req.created_by,
-          department: userData?.Student?.Classes?.Departments?.dept_name || userData?.Faculty?.Departments?.dept_name || "N/A",
+          department: student?.Classes?.Departments?.dept_name || faculty?.Departments?.dept_name || "N/A",
         });
       }
     }
