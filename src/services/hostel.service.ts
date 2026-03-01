@@ -44,15 +44,24 @@ export async function processHostellerNotification(payload: {
             return { success: false, statusCode: 400, message: "No valid student UIDs found in the list." };
         }
 
-        // 2. Fetch student profiles (Only hostellers)
-        const studentProfiles = await prisma.student.findMany({
-            where: {
-                mits_uid: { in: rawUids },
-                hosteller: true
-            }
+        // Generate case variants for robust searching
+        const searchUids = [...new Set([
+            ...rawUids.map(u => u.toLowerCase()),
+            ...rawUids.map(u => u.toUpperCase())
+        ])];
+
+        // 2. Fetch student profiles from SQL
+        const studentsInDb = await prisma.student.findMany({
+            where: { mits_uid: { in: searchUids } }
         });
 
+        console.log(`[OVERNIGHT_HOSTEL] Found ${studentsInDb.length} student records in DB out of ${rawUids.length} UIDs provided.`);
+
+        // 3. Filter only hostellers
+        const studentProfiles = studentsInDb.filter(s => s.hosteller === true);
+
         if (studentProfiles.length === 0) {
+            console.log(`[OVERNIGHT_HOSTEL] No hostellers found in the provided list. (Available students: ${studentsInDb.length})`);
             return {
                 success: true,
                 statusCode: 200,
@@ -61,20 +70,29 @@ export async function processHostellerNotification(payload: {
             };
         }
 
-        // 3. Group hostellers by Gender
+        console.log(`[OVERNIGHT_HOSTEL] Processing ${studentProfiles.length} hostellers for notification.`);
+
+        // 3. Group hostellers by Gender ('M' for Male, 'F' for Female as per DB)
         const genderGroups: Record<string, {
             roleTag: string,
             students: any[],
             label: string
         }> = {
-            "Male": { roleTag: "WARDEN_MH", students: [], label: "Mens Hostel" },
-            "Female": { roleTag: "WARDEN_LH", students: [], label: "Ladies Hostel" }
+            "M": { roleTag: "WARDEN_MH", students: [], label: "Mens Hostel" },
+            "F": { roleTag: "WARDEN_LH", students: [], label: "Ladies Hostel" }
         };
 
         for (const student of studentProfiles) {
-            const gender = student.gender || "Male"; // Default to Male if missing
+            const gender = student.gender || "M"; // Default to M if missing
             if (genderGroups[gender]) {
                 genderGroups[gender].students.push({
+                    mits_uid: student.mits_uid,
+                    name: student.name,
+                    gender: student.gender
+                });
+            } else {
+                console.warn(`[OVERNIGHT_HOSTEL] Unknown gender "${gender}" for student ${student.mits_uid}. Mapping to MH.`);
+                genderGroups["M"].students.push({
                     mits_uid: student.mits_uid,
                     name: student.name,
                     gender: student.gender
@@ -82,14 +100,16 @@ export async function processHostellerNotification(payload: {
             }
         }
 
+        console.log(`[OVERNIGHT_HOSTEL] Gender Groups: MH=${genderGroups["M"].students.length}, LH=${genderGroups["F"].students.length}`);
+
         // 4. Fetch Coordinator/Requester details
         const faculty = await prisma.faculty.findUnique({
             where: { mits_uid: coordinatorUid },
             include: { Departments: true }
         });
 
-        let coordinatorName = faculty?.name;
-        let coordinatorDept = faculty?.Departments?.dept_name;
+        let coordinatorName = faculty?.name || "";
+        let coordinatorDept = faculty?.Departments?.dept_name || "";
 
         if (!faculty) {
             const student = await prisma.student.findUnique({
@@ -100,10 +120,16 @@ export async function processHostellerNotification(payload: {
             coordinatorDept = student?.Classes?.Departments?.dept_name || "N/A";
         }
 
+        // Final fallbacks to ensure they are never undefined
+        coordinatorName = coordinatorName || "Unknown";
+        coordinatorDept = coordinatorDept || "N/A";
+
+        console.log(`[OVERNIGHT_HOSTEL] Coordinator: ${coordinatorName} (${coordinatorDept})`);
+
         const createdRequests = [];
 
         // 5. Create requests for each hostel group
-        for (const [gender, group] of Object.entries(genderGroups)) {
+        for (const [genderKey, group] of Object.entries(genderGroups)) {
             if (group.students.length === 0) continue;
 
             // Resolve Wardens
@@ -117,12 +143,12 @@ export async function processHostellerNotification(payload: {
             });
 
             if (wardens.length === 0) {
-                console.warn(`[OVERNIGHT_HOSTEL] No active wardens found for ${group.roleTag}`);
+                console.warn(`[OVERNIGHT_HOSTEL] !CRITICAL! No active wardens found for ${group.roleTag}. Skipping ${group.label}.`);
                 continue;
             }
 
             const requestId = generateId();
-            console.log(`[OVERNIGHT_HOSTEL] Routing request ${requestId} for ${group.label} to wardens: ${wardens.map(w => w.mits_uid).join(', ')}`);
+            console.log(`[OVERNIGHT_HOSTEL] Routing ${group.students.length} students to ${group.label} (Wardens: ${wardens.map(w => w.mits_uid).join(', ')})`);
             const nowISO = new Date().toISOString();
 
             // SQL Entries
@@ -143,6 +169,8 @@ export async function processHostellerNotification(payload: {
                     approvalType: group.roleTag
                 }))
             });
+
+            console.log(`[OVERNIGHT_HOSTEL] Created SQL request ${requestId} with ${wardens.length} approvers.`);
 
             // Analytics
             try {
@@ -169,7 +197,7 @@ export async function processHostellerNotification(payload: {
                 eventName: eventName,
                 eventDate: date,
                 studentId: coordinatorUid,
-                studentName: coordinatorName,
+                studentName: "Event Coordinator",
                 requesterRole: `Event Coordinator (${coordinatorDept})`,
                 hostelType: group.label,
                 student_list: group.students,

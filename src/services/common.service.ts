@@ -487,6 +487,7 @@ export async function create_request(
     const procDoc = await firestore.collection("procedures").doc(procedureId).get();
     const procData = procDoc.data();
     const hookData = formData.hook_data || formData.student_list || formData.uids || [];
+    console.log(`[SYSTEM_HOOK_START] Hook data to process:`, JSON.stringify(hookData).substring(0, 500), hookData.length > 0 ? "..." : "");
 
     if (procData?.system_hook === "PLACEMENT_BULK" && procData?.hook_trigger === "START") {
       console.log(`[PLACEMENT_BULK_HOOK] Executing START trigger for ${procedureId}`);
@@ -507,7 +508,7 @@ export async function create_request(
         procedureId,
         hookData: Array.isArray(hookData) ? hookData : [],
         coordinatorUid: mits_uid,
-        eventName: formData.event_name || formData.title || "Overnight Event",
+        eventName: formData.event_name || formData.title || "Hostel Notification",
         date: formData.event_date || formData.date || new Date().toISOString().split('T')[0],
       });
     }

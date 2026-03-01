@@ -204,7 +204,7 @@ export async function approveRequestService(payload: any): Promise<Result> {
     const approvalProgress = data.approval_progress || data.approvalProgress || [];
     const currentLevel = data.current_level !== undefined ? data.current_level : (data.currentLevel !== undefined ? data.currentLevel : 1);
     const procId = data.procId || data.proc_id || data.procedure_id || data.procedureId;
-    const studentId = data.studentId || data.student_id || data.studentUID;
+    const studentId = data.studentId || data.student_id || data.studentUID || data.created_by || data.createdBy;
 
     if (!procId) {
       console.error(`Approval failed: Request ${requestId} missing procId mapping.`);
@@ -300,6 +300,7 @@ export async function approveRequestService(payload: any): Promise<Result> {
         if (procedure?.system_hook && procedure?.hook_trigger === "END") {
           const formData = data.formData || {};
           const hookData = formData.hook_data || formData.student_list || formData.uids || [];
+          console.log(`[SYSTEM_HOOK_END] Hook data to process:`, JSON.stringify(hookData).substring(0, 500), hookData.length > 0 ? "..." : "");
 
           console.log(`[SYSTEM_HOOK_END] Triggering ${procedure.system_hook} for approved request ${requestId}`);
 
@@ -308,7 +309,7 @@ export async function approveRequestService(payload: any): Promise<Result> {
               procedureId: procId,
               hookData: Array.isArray(hookData) ? hookData : [],
               coordinatorUid: studentId,
-              eventName: formData.event_name || formData.title || "Overnight Event Approved",
+              eventName: formData.event_name || formData.title || "Hostel Notification",
               date: formData.event_date || formData.date || new Date().toISOString().split('T')[0],
             });
           } else if (procedure.system_hook === "PLACEMENT_BULK") {
