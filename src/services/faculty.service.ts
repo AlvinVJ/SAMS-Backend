@@ -615,9 +615,19 @@ export async function getFacultyProfileService(user: any): Promise<Result> {
       where: { mits_uid: userAccount.mits_uid },
       include: {
         Departments: true,
+        DepartmentFaculty: {
+          include: {
+            Departments: true,
+            Roles: true
+          }
+        },
         ClassFaculty: {
           include: {
-            Classes: true
+            Classes: {
+              include: {
+                Batches: true
+              }
+            }
           }
         }
       }
@@ -631,10 +641,16 @@ export async function getFacultyProfileService(user: any): Promise<Result> {
     if (!faculty) {
       return { success: false, statusCode: 404, message: "Faculty profile not found" };
     }
+
     const assignedClasses = faculty.ClassFaculty.map(cf => ({
       className: cf.Classes.class,
+      batchName: cf.Classes.Batches.batch,
       role: cf.role_tag.replaceAll('_', ' ').toUpperCase()
     }));
+
+    const hodOf = (faculty.DepartmentFaculty && faculty.DepartmentFaculty.Roles?.role_tag.toLowerCase() === 'hod')
+      ? faculty.DepartmentFaculty.Departments.dept_name
+      : null;
 
     const roles = roleMappings.map(rm => rm.Roles.role_tag.replaceAll('_', ' ').toUpperCase());
 
@@ -649,7 +665,8 @@ export async function getFacultyProfileService(user: any): Promise<Result> {
         department: faculty.Departments.dept_name,
         assignedClasses: assignedClasses,
         roles: roles,
-        designation: "Faculty Member"
+        designation: "Faculty Member",
+        hodOf: hodOf
       }
     };
   } catch (error) {
