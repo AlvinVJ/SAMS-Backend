@@ -160,6 +160,9 @@ export async function approveRequestService(payload: any): Promise<Result> {
     if (!snap.exists) return { success: false, statusCode: 404, message: "Request not found" };
 
     const data = snap.data()!;
+    if (data.status !== "PENDING") {
+      return { success: false, statusCode: 400, message: `Request is already ${data.status.toLowerCase()}` };
+    }
     const approvalProgress = data.approval_progress || data.approvalProgress || [];
     const currentLevel = data.current_level !== undefined ? data.current_level : (data.currentLevel !== undefined ? data.currentLevel : 1);
     const procId = data.procId || data.proc_id || data.procedure_id || data.procedureId;
@@ -305,6 +308,9 @@ export async function rejectRequestService(payload: any): Promise<Result> {
     if (!snap.exists) return { success: false, statusCode: 404, message: "Request not found" };
 
     const data = snap.data()!;
+    if (data.status !== "PENDING") {
+      return { success: false, statusCode: 400, message: `Request is already ${data.status.toLowerCase()}` };
+    }
     const approvalProgress = data.approval_progress || data.approvalProgress || [];
     const currentLevel = data.current_level !== undefined ? data.current_level : (data.currentLevel !== undefined ? data.currentLevel : 1);
     const levelBlock = approvalProgress.find((lvl: any) => lvl.level === currentLevel);
