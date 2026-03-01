@@ -61,17 +61,6 @@ export async function getRequestsToApproveService(payload: any) {
         Requests: {
           include: {
             Procedures: true,
-            UserAccount: {
-              include: {
-                Student: {
-                  include: {
-                    Classes: {
-                      include: { Departments: true }
-                    }
-                  }
-                }
-              }
-            }
           }
         }
       }
@@ -122,12 +111,17 @@ export async function getRequestsToApproveService(payload: any) {
         }
       }
 
+      const student = await prisma.student.findUnique({
+        where: { mits_uid: req.created_by },
+        include: { Classes: { include: { Departments: true } } }
+      });
+
       approvableRequests.push({
         id: req.req_id,
         type: req.Procedures?.title || "Request",
-        studentName: req.UserAccount?.Student?.name || data.studentName || "Unknown",
+        studentName: student?.name || data.studentName || "Unknown",
         studentId: req.created_by,
-        department: req.UserAccount?.Student?.Classes?.Departments?.dept_name || "N/A",
+        department: student?.Classes?.Departments?.dept_name || "N/A",
         date: req.created_at.toISOString().split("T")[0],
         description: (data.formData) ? Object.entries(data.formData).filter(([k]) => k !== "DEBUG_SYNC").map(([k, v]) => `${k}: ${v}`).join(" | ") : "No description",
         attachments: data.attachments || [],
@@ -404,9 +398,9 @@ export async function getActedRequestsService(user: any): Promise<Result> {
           status_text = `Pending ${roleName}`;
         }
 
-        const userData = await prisma.userAccount.findUnique({
+        const student = await prisma.student.findUnique({
           where: { mits_uid: prismaReq?.created_by || "" },
-          include: { Student: { include: { Classes: { include: { Departments: true } } } } }
+          include: { Classes: { include: { Departments: true } } }
         });
 
         // Enrich student lists (names/genders)
@@ -454,9 +448,9 @@ export async function getActedRequestsService(user: any): Promise<Result> {
           formData: data.formData || {},
           students: students,
           isBulk: students !== null,
-          studentName: userData?.Student?.name || data.studentName || "Unknown",
+          studentName: student?.name || data.studentName || "Unknown",
           studentId: prismaReq?.created_by,
-          department: userData?.Student?.Classes?.Departments?.dept_name || "N/A",
+          department: student?.Classes?.Departments?.dept_name || "N/A",
           roleTag: (procDoc.data()?.approvalLevels?.find((l: any) => l.level === data.current_level)?.role || "Approver"),
           approvalHistory: approvalHistory,
           lastLevelRoleTag: data.lastLevelRoleTag || getLastLevelRoleTag(procDoc.data())
@@ -562,36 +556,36 @@ export async function getFacultyProfileService(user: any): Promise<Result> {
   try {
     const userAccount = await prisma.userAccount.findUnique({
       where: { auth_uid: user.uid },
+    });
+
+    if (!userAccount) return { success: false, statusCode: 404, message: "Faculty account not found" };
+
+    const faculty = await prisma.faculty.findUnique({
+      where: { mits_uid: userAccount.mits_uid },
       include: {
-        Faculty: {
+        Departments: true,
+        ClassFaculty: {
           include: {
-            Departments: true,
-            ClassFaculty: {
-              include: {
-                Classes: true
-              }
-            }
-          }
-        },
-        RoleMapping: {
-          include: {
-            Roles: true
+            Classes: true
           }
         }
       }
     });
 
-    if (!userAccount || !userAccount.Faculty) {
+    const roleMappings = await prisma.roleMapping.findMany({
+      where: { mits_uid: userAccount.mits_uid, is_active: true },
+      include: { Roles: true }
+    });
+
+    if (!faculty) {
       return { success: false, statusCode: 404, message: "Faculty profile not found" };
     }
-
-    const faculty = userAccount.Faculty;
     const assignedClasses = faculty.ClassFaculty.map(cf => ({
       className: cf.Classes.class,
       role: cf.role_tag.replaceAll('_', ' ').toUpperCase()
     }));
 
-    const roles = userAccount.RoleMapping.map(rm => rm.Roles.role_tag.replaceAll('_', ' ').toUpperCase());
+    const roles = roleMappings.map(rm => rm.Roles.role_tag.replaceAll('_', ' ').toUpperCase());
 
     return {
       success: true,

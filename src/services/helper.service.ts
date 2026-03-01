@@ -1,17 +1,17 @@
 import { prisma } from "../db/prisma.js";
 import admin from "../config/firebase.js";
-import {firebaseAuth, firestore} from "../config/firebase.js";
+import { firebaseAuth, firestore } from "../config/firebase.js";
 
 interface BasicResult {
-    success: boolean;
-    statusCode: number;
-    message: string;
-    data?: any;
+  success: boolean;
+  statusCode: number;
+  message: string;
+  data?: any;
 
 }
 interface BasicPayload {
-    user: {uid: string, email: string, role: string, mits_uid: string}
-    body: any;
+  user: { uid: string, email: string, role: string, mits_uid: string }
+  body: any;
 }
 
 // export async function fetch_roles(
@@ -115,7 +115,7 @@ export async function fetch_roles(
 
     const roleFilter = {
       contains: search,
-      //mode: "insensitive" as const,
+      mode: "insensitive" as const,
     };
 
     // 1️⃣ From ClassFaculty
@@ -157,7 +157,7 @@ export async function fetch_roles(
       },
     });
 
-    // 4️⃣ From Roles → RoleMapping → UserAccount → Faculty
+    // 4️⃣ From Roles → RoleMapping → Faculty
     const roles = await prisma.roles.findMany({
       where: {
         role_tag: roleFilter,
@@ -168,55 +168,31 @@ export async function fetch_roles(
         RoleMapping: {
           where: { is_active: true },
           select: {
-            UserAccount: {
-              select: {
-                mits_uid: true,
-                Faculty: {
-                  select: { name: true },
-                },
-              },
-            },
+            mits_uid: true,
           },
         },
       },
     });
 
-    // 🔹 Normalize + deduplicate
-    const resultMap = new Map<string, any>();
+    // 🔹 Normalize + deduplicate by role_tag
+    const uniqueRoleTags = new Set<string>();
 
-    classFaculty.forEach(r => {
-      if (r.Faculty) {
-        resultMap.set(
-          `${r.Faculty.mits_uid}-${r.role_tag}`,
-          {
-            mits_uid: r.Faculty.mits_uid,
-            name: r.Faculty.name,
-            role_tag: r.role_tag,
-          }
-        );
-      }
-    });
+    classFaculty.forEach(r => r.role_tag && uniqueRoleTags.add(r.role_tag.toUpperCase()));
+    clubAdmins.forEach(r => r.role_tag && uniqueRoleTags.add(r.role_tag.toUpperCase()));
+    clubs.forEach(r => r.coordinator_role_tag && uniqueRoleTags.add(r.coordinator_role_tag.toUpperCase()));
+    roles.forEach(r => r.role_tag && uniqueRoleTags.add(r.role_tag.toUpperCase()));
 
-    roles.forEach(r => {
-      r.RoleMapping.forEach(m => {
-        if (m.UserAccount?.Faculty) {
-          resultMap.set(
-            `${m.UserAccount.mits_uid}-${r.role_tag}`,
-            {
-              mits_uid: m.UserAccount.mits_uid,
-              name: m.UserAccount.Faculty.name,
-              role_tag: r.role_tag,
-            }
-          );
-        }
-      });
-    });
+    const data = Array.from(uniqueRoleTags).map(tag => ({
+      mits_uid: "ROLE", // Indicate this is an abstract role
+      name: "Contextual Role Holder",
+      role_tag: tag,
+    }));
 
     return {
       success: true,
       statusCode: 200,
       message: "success",
-      data: Array.from(resultMap.values()),
+      data,
     };
 
   } catch (error) {
