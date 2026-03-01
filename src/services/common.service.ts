@@ -2,6 +2,7 @@ import { prisma } from "../db/prisma.js";
 import admin from "../config/firebase.js";
 import { firebaseAuth, firestore } from "../config/firebase.js";
 import { processPlacementAttendance } from "./placement.service.js";
+import { processHostellerNotification } from "./hostel.service.js";
 
 
 async function resolveApproversForRole(
@@ -521,6 +522,32 @@ export async function create_request(
           return kl.includes('event_name') || kl.includes('company_name') || kl.includes('event_title') || (kl.includes('company') && !kl.includes('list'));
         })?.[1] || "Placement Event",
         date: formData.test_date || formData.event_date || formData.event_data || formData.date || new Date().toISOString().split('T')[0],
+      });
+    }
+
+    if (procData?.system_hook === "OVERNIGHT_HOSTEL") {
+      // Robust student list extraction from formData
+      let studentListData = formData.student_list ||
+        formData.upload_student_list_csv ||
+        formData.students ||
+        formData.studentList || [];
+
+      if (studentListData.length === 0) {
+        const fuzzyKey = Object.keys(formData).find(k => {
+          const keyLower = k.toLowerCase();
+          return (keyLower.includes('student') && (keyLower.includes('list') || keyLower.includes('data'))) ||
+            keyLower === 'students' ||
+            keyLower === 'uids';
+        });
+        if (fuzzyKey) studentListData = formData[fuzzyKey];
+      }
+
+      return await processHostellerNotification({
+        procedureId: procedureId,
+        students: Array.isArray(studentListData) ? studentListData : [],
+        coordinatorUid: mits_uid,
+        eventName: formData.event_name || formData.title || formData.event_name_ || "Overnight Event",
+        date: formData.event_date || formData.date || new Date().toISOString().split('T')[0],
       });
     }
 
