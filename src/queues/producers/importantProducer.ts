@@ -6,10 +6,10 @@ import { NotificationTypes } from "../event.js";
 /**
  * Publish an important notification (approval/request related)
  */
-export async function publishApprovalAlert(requestId: string, targetUserId: string) {
-  await sendToSQS(SQS_QUEUES.IMPORTANT, {
+export async function publishApprovalAlert(requestId: string, targetUserIds: string[]) {
+  await sendToSQS(SQS_QUEUES.IMPORTANT!, {
     type: NotificationTypes.APPROVAL_ALERT,
-    targetUserId,
+    targetUserIds,
     message: `Request #${requestId} needs your approval.`,
     requestId,
     timestamp: new Date().toISOString(),
@@ -20,7 +20,7 @@ export async function publishApprovalAlert(requestId: string, targetUserId: stri
 
 export async function publishApprovalUpdate(
   requestId: string,
-  studentUserId: string,
+  studentUserIds: string[],
   approvedBy: string,
   nextLevel?: number // ✅ optional
 ) {
@@ -28,9 +28,9 @@ export async function publishApprovalUpdate(
     ? `Your request #${requestId} was approved by ${approvedBy}. Forwarded to Level ${nextLevel} for further approval.`
     : `Your request #${requestId} was approved by ${approvedBy}.`;
 
-  await sendToSQS(SQS_QUEUES.IMPORTANT, {
+  await sendToSQS(SQS_QUEUES.IMPORTANT!, {
     type: NotificationTypes.APPROVAL_UPDATE,
-    targetUserId: studentUserId,
+    targetUserIds: studentUserIds,
     message,
     requestId,
     nextLevel: nextLevel ?? null, // store null if not present
@@ -45,11 +45,11 @@ export async function publishApprovalUpdate(
  */
 export async function publishFinalApproval(
   requestId: string,
-  studentUserId: string
+  studentUserIds: string[]
 ) {
-  await sendToSQS(SQS_QUEUES.IMPORTANT, {
+  await sendToSQS(SQS_QUEUES.IMPORTANT!, {
     type: NotificationTypes.REQUEST_APPROVED,
-    targetUserId: studentUserId,
+    targetUserIds: studentUserIds,
     message: `Your request #${requestId} has been fully approved ✅`,
     requestId,
     timestamp: new Date().toISOString(),
@@ -62,15 +62,31 @@ export async function publishFinalApproval(
  */
 export async function publishRequestRejected(
   requestId: string,
-  studentUserId: string,
+  studentUserIds: string[],
   reason?: string
 ) {
-  await sendToSQS(SQS_QUEUES.IMPORTANT, {
+  await sendToSQS(SQS_QUEUES.IMPORTANT!, {
     type: NotificationTypes.REQUEST_REJECTED,
-    targetUserId: studentUserId,
+    targetUserIds: studentUserIds,
     message: reason
       ? `Your request #${requestId} was rejected ❌. Reason: ${reason}`
       : `Your request #${requestId} was rejected ❌.`,
+    requestId,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+/**
+ * 📢 Notify student that their request was successfully withdrawn
+ */
+export async function publishRequestWithdrawn(
+  requestId: string,
+  studentUserIds: string[]
+) {
+  await sendToSQS(SQS_QUEUES.IMPORTANT!, {
+    type: NotificationTypes.REQUEST_WITHDRAWN,
+    targetUserIds: studentUserIds,
+    message: `Your request #${requestId} has been successfully withdrawn.`,
     requestId,
     timestamp: new Date().toISOString(),
   });
