@@ -48,6 +48,10 @@ export async function requireAuth(
       }
     });
 
+    if (userAccount?.isBanned) {
+      return res.status(403).json({ error: "Your account has been restricted. Please contact the administrator." });
+    }
+
     let role: AppRole;
     let mits_uid: string;
 
@@ -61,13 +65,16 @@ export async function requireAuth(
     } else {
       // 2️⃣ Fallback: Check if they are pre-imported in Student or Faculty tables (First-time signup)
       const isStudent = isStudentEmail(email);
-      const facultyWhitelist = await prisma.faculty.findUnique({ where: { mits_uid: emailPrefix } });
+      const studentProfile = isStudent ? await prisma.student.findUnique({ where: { mits_uid: emailPrefix } }) : null;
+      const facultyProfile = !isStudent ? await prisma.faculty.findUnique({ where: { mits_uid: emailPrefix } }) : null;
 
-      if (isStudent) {
-        role = "student";
-        mits_uid = emailPrefix;
-      } else if (facultyWhitelist) {
-        role = "faculty";
+      const profile = studentProfile || facultyProfile;
+
+      if (profile) {
+        if (!profile.is_active || profile.deleted_at !== null) {
+          return res.status(403).json({ error: "Access denied: profile inactive or deleted" });
+        }
+        role = isStudent ? "student" : "faculty";
         mits_uid = emailPrefix;
       } else {
         // Non-students MUST be whitelisted as faculty in SQL to proceed
