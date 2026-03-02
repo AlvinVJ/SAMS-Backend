@@ -188,119 +188,42 @@ function isStudentEmail(email: string): boolean {
 
 export async function signup(payload: BasicPayload): Promise<BasicResult> {
   try {
-    const db = firestore;
     const isStudent = isStudentEmail(payload.user.email);
-
-    let role: "student" | "faculty" | "admin";
     let emailPrefix = payload.user.email.split("@")[0];
+
     if (emailPrefix == null) {
       return {
         success: false,
-        statusCode: 404,
-        message: "email not found",
+        statusCode: 400,
+        message: "Invalid email format",
       };
     }
 
-    if (isStudent) {
-      role = "student";
-    } else {
-      const userDetailsSnap = await db
-        .collection("userDetails")
-        .doc(emailPrefix)
-        .get();
+    console.log("Processing signup for:", emailPrefix);
 
-      if (!userDetailsSnap.exists) {
-        return {
-          success: false,
-          statusCode: 403,
-          message: "User not authorized to sign up",
-        };
-      }
-
-      const userData = userDetailsSnap.data()!;
-      role = userData.role;
-    }
-
-
-    const profileRef = db.collection("profiles").doc(emailPrefix);
-    const profileSnap = await profileRef.get();
-
-    if (!profileSnap.exists) {
-      await profileRef.set({
-        banned: false,
-        email: payload.user.email,
-        isActive: true,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        role: role,
-        uid: emailPrefix.toUpperCase()
-      });
-    }
-
-    console.log("Signup prefix:", emailPrefix);
-    const existingUser = await prisma.userAccount.findUnique({
+    // 1️⃣ Check if user already has an account
+    const existingAccount = await prisma.userAccount.findUnique({
       where: { mits_uid: emailPrefix },
+      include: { UserTypes: true }
     });
 
-    if (!existingUser) {
-      console.log("Checking for pre-imported profile for:", emailPrefix);
+    if (existingAccount) {
+      console.log("Existing account found for:", emailPrefix);
 
-      // Look for profile in Student or Faculty tables
-      const studentProfile = await prisma.student.findUnique({ where: { mits_uid: emailPrefix } });
-      const facultyProfile = await prisma.faculty.findUnique({ where: { mits_uid: emailPrefix } });
-
-      if (!studentProfile && !facultyProfile) {
-        return {
-          success: false,
-          statusCode: 403,
-          message: "User not found in system. Please contact administrator.",
-        };
-      }
-
-      // Determine user type ID based on profile and Firestore role
-      const userTypeTag = isStudent ? "STUDENT" : (role === "admin" ? "ADMIN" : "FACULTY");
-      const userType = await prisma.userTypes.findUnique({ where: { user_type_tag: userTypeTag } });
-
-      if (!userType) {
-        return {
-          success: false,
-          statusCode: 500,
-          message: "User type configuration error",
-        };
-      }
-
-      console.log("Creating new UserAccount for:", emailPrefix);
-      await prisma.userAccount.create({
-        data: {
-          auth_uid: payload.user.uid,
-          mits_uid: emailPrefix,
-          email: payload.user.email,
-          user_type: userType.user_type_id
-        },
-      });
-      return {
-        success: true,
-        statusCode: 201,
-        message: "User signed up successfully",
-        data: {
-          uid: payload.user.uid,
-          email: payload.user.email,
-          role: role,
-        },
-      };
-    }
-    else {
-      console.log("Existing user found. Current email:", existingUser.email, "New email:", payload.user.email);
-      // Link Google UID / update email if it was a temp pre-import account or email changed
-      if (existingUser.email !== payload.user.email || existingUser.auth_uid !== payload.user.uid) {
-        console.log("Updating account for user:", emailPrefix);
+      // Update linked Firebase UID or email if they've changed (e.g., initial import had placeholder UID)
+      if (existingAccount.auth_uid !== payload.user.uid || existingAccount.email !== payload.user.email) {
         await prisma.userAccount.update({
           where: { mits_uid: emailPrefix },
           data: {
-            email: payload.user.email,
-            auth_uid: payload.user.uid
-          },
+            auth_uid: payload.user.uid,
+            email: payload.user.email
+          }
         });
       }
+
+      const role = existingAccount.UserTypes.user_type_tag.toLowerCase() === 'admin' ? 'admin'
+        : existingAccount.UserTypes.user_type_tag.toLowerCase() === 'faculty' ? 'faculty'
+          : 'student';
       return {
         success: true,
         statusCode: 200,
@@ -308,20 +231,77 @@ export async function signup(payload: BasicPayload): Promise<BasicResult> {
         data: {
           uid: payload.user.uid,
           email: payload.user.email,
-          role: payload.user.role,
+          role: role,
+          mits_uid: existingAccount.mits_uid,
+          isActive: existingAccount.is_active,
+          banned: false,
+          // Fetch additional profile info if needed
+          ...(role === 'student' ? {
+            isHosteler: (await prisma.student.findUnique({ where: { mits_uid: existingAccount.mits_uid } }))?.hosteller || false,
+          } : {})
         },
       };
     }
+
+    // 2️⃣ Authorization Check: Must exist in Student or Faculty table to be "whitelisted"
+    const studentProfile = await prisma.student.findUnique({ where: { mits_uid: emailPrefix } });
+    const facultyProfile = await prisma.faculty.findUnique({ where: { mits_uid: emailPrefix } });
+
+    if (!studentProfile && !facultyProfile) {
+      console.warn("Unauthorized signup attempt for:", emailPrefix);
+      return {
+        success: false,
+        statusCode: 403,
+        message: "Your email is not authorized to access this system. Please contact the administrator.",
+      };
+    }
+
+    // 3️⃣ Determine User Type
+    const userTypeTag = isStudent ? "STUDENT" : (facultyProfile ? "FACULTY" : "unknown");
+    const userType = await prisma.userTypes.findUnique({ where: { user_type_tag: userTypeTag } });
+
+    if (!userType) {
+      return {
+        success: false,
+        statusCode: 500,
+        message: "System configuration error: user type not found",
+      };
+    }
+
+    // 4️⃣ Create User Account
+    console.log(`Creating new ${userTypeTag} account for:`, emailPrefix);
+    const newAccount = await prisma.userAccount.create({
+      data: {
+        auth_uid: payload.user.uid,
+        mits_uid: emailPrefix,
+        email: payload.user.email,
+        user_type: userType.user_type_id
+      },
+    });
+
+    return {
+      success: true,
+      statusCode: 201,
+      message: "User signed up successfully",
+      data: {
+        uid: payload.user.uid,
+        email: payload.user.email,
+        role: userTypeTag.toLowerCase(),
+        mits_uid: emailPrefix,
+        isActive: true,
+        banned: false,
+        isHosteler: studentProfile?.hosteller || false,
+      },
+    };
+
   } catch (error) {
     console.error("Signup service error:", error);
-
     return {
       success: false,
       statusCode: 500,
-      message: "Internal server error",
+      message: "An internal error occurred during signup",
     };
   }
-
 }
 
 export async function fetch_procedures(

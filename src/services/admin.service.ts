@@ -950,8 +950,6 @@ export async function createUserService(payload: {
     const { mits_uid, name, email, user_type_tag = "FACULTY", role_ids, profileData } = payload;
 
     const normalizedType = (user_type_tag || "FACULTY").toUpperCase();
-    const shouldWhitelist = normalizedType !== "STUDENT";
-    const whitelistRole: "faculty" | "admin" = normalizedType === "ADMIN" ? "admin" : "faculty";
 
     // 1. Validation
     const existing = await prisma.userAccount.findUnique({
@@ -1061,20 +1059,6 @@ export async function createUserService(payload: {
       }
     });
 
-    if (shouldWhitelist) {
-      const emailPrefix = email ? email.split("@")[0] : mits_uid;
-      await firestore
-        .collection("userDetails")
-        .doc(emailPrefix!)
-        .set(
-          {
-            role: whitelistRole,
-            uid: emailPrefix,
-            email: email ?? null,
-          },
-          { merge: true }
-        );
-    }
 
     return {
       success: true,
@@ -1385,12 +1369,6 @@ export async function bulkImportUsersService(payload: {
   defaultUserType?: string;
 }): Promise<Result> {
   let rowNum = 2; // Assuming header is line 1
-  const whitelistEntries: Array<{
-    docId: string;
-    role: "faculty" | "admin";
-    uid: string;
-    email: string | null;
-  }> = [];
 
   try {
     const userTypes = await prisma.userTypes.findMany();
@@ -1427,24 +1405,6 @@ export async function bulkImportUsersService(payload: {
 
         const normalizedType = user_type_tag.toUpperCase();
 
-        // 1. Determine auth_uid for Whitelist
-        let auth_uid = `temp_${mits_uid}`;
-        if (email) {
-          try {
-            const firebaseUser = await firebaseAuth.getUserByEmail(email);
-            auth_uid = firebaseUser.uid;
-          } catch (e) {
-            // User doesn't exist in Firebase yet
-          }
-        }
-
-        // 2. Prepare Whitelist Entry (Firestore)
-        const shouldWhitelist = normalizedType !== "STUDENT";
-        if (shouldWhitelist) {
-          const docId = email ? email.split("@")[0] : mits_uid;
-          const role: "faculty" | "admin" = normalizedType === "ADMIN" ? "admin" : "faculty";
-          whitelistEntries.push({ docId, role, uid: auth_uid, email: email ?? null });
-        }
 
         // 3. Create/Update Profile (Student or Faculty/Admin)
         if (normalizedType === "STUDENT") {
@@ -1536,34 +1496,6 @@ export async function bulkImportUsersService(payload: {
       }
     }, { timeout: 30000 });
 
-    // 5. Update Firestore Whitelist
-    const whitelistFailures: string[] = [];
-    for (const entry of whitelistEntries) {
-      try {
-        await firestore
-          .collection("userDetails")
-          .doc(entry.docId)
-          .set(
-            {
-              role: entry.role,
-              uid: entry.uid,
-              email: entry.email,
-            },
-            { merge: true }
-          );
-      } catch (err) {
-        console.error(`Failed to update userDetails for ${entry.docId}:`, err);
-        whitelistFailures.push(entry.docId);
-      }
-    }
-
-    if (whitelistFailures.length > 0) {
-      return {
-        success: false,
-        statusCode: 500,
-        message: `Users imported, but failed to update whitelist for: ${whitelistFailures.join(", ")}`,
-      };
-    }
 
     return {
       success: true,
