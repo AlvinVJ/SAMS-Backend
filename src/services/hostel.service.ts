@@ -73,30 +73,23 @@ export async function processHostellerNotification(payload: {
         console.log(`[OVERNIGHT_HOSTEL] Processing ${studentProfiles.length} hostellers for notification.`);
 
         // 3. Group hostellers by Gender ('M' for Male, 'F' for Female as per DB)
-        const genderGroups: Record<string, {
-            roleTag: string,
-            students: any[],
-            label: string
-        }> = {
-            "M": { roleTag: "WARDEN_MH", students: [], label: "Mens Hostel" },
-            "F": { roleTag: "WARDEN_LH", students: [], label: "Ladies Hostel" }
+        const genderGroups = {
+            "M": { roleTag: "WARDEN_MH", students: [] as any[], label: "Mens Hostel" },
+            "F": { roleTag: "WARDEN_LH", students: [] as any[], label: "Ladies Hostel" }
         };
 
         for (const student of studentProfiles) {
-            const gender = student.gender || "M"; // Default to M if missing
-            if (genderGroups[gender]) {
-                genderGroups[gender].students.push({
-                    mits_uid: student.mits_uid,
-                    name: student.name,
-                    gender: student.gender
-                });
-            } else {
+            const gender = (student.gender || "M") as "M" | "F";
+            const group = genderGroups[gender] || genderGroups["M"];
+
+            group.students.push({
+                mits_uid: student.mits_uid,
+                name: student.name,
+                gender: student.gender
+            });
+
+            if (!genderGroups[gender]) {
                 console.warn(`[OVERNIGHT_HOSTEL] Unknown gender "${gender}" for student ${student.mits_uid}. Mapping to MH.`);
-                genderGroups["M"].students.push({
-                    mits_uid: student.mits_uid,
-                    name: student.name,
-                    gender: student.gender
-                });
             }
         }
 

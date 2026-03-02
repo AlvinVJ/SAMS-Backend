@@ -437,7 +437,7 @@ export async function bulkImportPlacementAttendance(req: Request, res: Response)
         const placementService = await import("../services/placement.service.js");
         const result = await placementService.processPlacementAttendance({
           procedureId: "PLACEMENT_BULK", // Fixed: Added procedureId
-          students,
+          hookData: students,
           coordinatorUid: req.user.mits_uid,
           eventName,
           date
