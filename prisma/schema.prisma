@@ -234,6 +234,7 @@ model UserAccount {
   is_active  Boolean   @default(true)
   deleted_at DateTime?
   email      String?   @unique
+  isBanned   Boolean   @default(false)
   UserTypes  UserTypes @relation(fields: [user_type], references: [user_type_id])
 
   @@index([auth_uid])
