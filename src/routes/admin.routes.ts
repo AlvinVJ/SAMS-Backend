@@ -34,6 +34,7 @@ import {
   assignDepartmentRole,
   removeDepartmentRole,
   createRole,
+  createUserType,
   getClassFacultyRoles,
   assignClassRole,
   removeClassRole,
@@ -84,6 +85,7 @@ adminRouter.post("/role", createRole);
 adminRouter.put("/role", updateRole);
 adminRouter.delete("/role/:id", deleteRole);
 adminRouter.get("/user-types", getUserTypes);
+adminRouter.post("/user-type", createUserType);
 
 // Global Monitoring
 adminRouter.get("/global-requests", getGlobalRequests);

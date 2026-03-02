@@ -837,10 +837,12 @@ export async function updateUserService(payload: {
   name?: string;
   email?: string;
   is_active?: boolean;
+  is_banned?: boolean;
+  user_type_id?: number;
   role_ids?: number[]; // Updated to accept multiple role IDs
 }): Promise<Result> {
   try {
-    const { mits_uid, name, email, is_active, role_ids } = payload;
+    const { mits_uid, name, email, is_active, is_banned, user_type_id, role_ids } = payload;
 
     const user = await prisma.userAccount.findUnique({
       where: { mits_uid },
@@ -853,11 +855,13 @@ export async function updateUserService(payload: {
 
     await prisma.$transaction(async (tx) => {
       // 1. Update UserAccount
-      if (is_active !== undefined || email !== undefined) {
+      if (is_active !== undefined || email !== undefined || is_banned !== undefined || user_type_id !== undefined) {
         await tx.userAccount.update({
           where: { mits_uid },
           data: {
             ...(is_active !== undefined && { is_active }),
+            ...(is_banned !== undefined && { isBanned: is_banned }),
+            ...(user_type_id !== undefined && { user_type: user_type_id }),
             ...(email && { email }),
           },
         });
@@ -865,7 +869,7 @@ export async function updateUserService(payload: {
 
       // 2. Update Profile
       if (user.UserTypes.user_type_tag === "FACULTY") {
-        await tx.faculty.update({
+        await tx.faculty.updateMany({
           where: { mits_uid },
           data: {
             ...(name !== undefined && { name }),
@@ -874,7 +878,7 @@ export async function updateUserService(payload: {
           },
         });
       } else if (user.UserTypes.user_type_tag === "STUDENT") {
-        await tx.student.update({
+        await tx.student.updateMany({
           where: { mits_uid },
           data: {
             ...(name !== undefined && { name }),
@@ -1143,6 +1147,71 @@ export async function createRoleService(payload: {
       success: false,
       statusCode: 500,
       message: "Internal server error",
+    };
+  }
+}
+
+export async function createUserTypeService(payload: {
+  user_type_tag: string;
+  description?: string;
+}): Promise<Result> {
+  try {
+    const { user_type_tag, description } = payload;
+    const existingType = await prisma.userTypes.findUnique({
+      where: { user_type_tag: user_type_tag.toUpperCase() },
+    });
+    if (existingType) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "User type already exists",
+      };
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Create User Type
+      const maxId = await tx.userTypes.aggregate({
+        _max: { user_type_id: true },
+      });
+      const nextId = (maxId._max.user_type_id || 0) + 1;
+
+      const newUserType = await tx.userTypes.create({
+        data: {
+          user_type_id: nextId,
+          user_type_tag: user_type_tag.toUpperCase(),
+          description: description ?? null,
+          is_active: true,
+        },
+      });
+
+      // 2. Sync with Roles table (User Types also act as base roles)
+      const maxRoleId = await tx.roles.aggregate({ _max: { role_id: true } });
+      const nextRoleId = (maxRoleId._max.role_id || 0) + 1;
+
+      await tx.roles.create({
+        data: {
+          role_id: nextRoleId,
+          role_tag: user_type_tag.toUpperCase(),
+          role_desc: description ?? null,
+          is_active: true,
+        },
+      });
+
+      return newUserType;
+    });
+
+    return {
+      success: true,
+      statusCode: 201,
+      message: "User type created successfully",
+      data: result,
+    };
+  } catch (error: any) {
+    console.error("createUserTypeService error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: `Failed to create user type: ${error.message}`,
     };
   }
 }

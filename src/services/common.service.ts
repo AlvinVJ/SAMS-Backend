@@ -210,7 +210,7 @@ export async function signup(payload: BasicPayload): Promise<BasicResult> {
     if (existingAccount) {
       console.log("Existing account found for:", emailPrefix);
 
-      // Update linked Firebase UID or email if they've changed (e.g., initial import had placeholder UID)
+      // Update linked Firebase UID or email if they've changed
       if (existingAccount.auth_uid !== payload.user.uid || existingAccount.email !== payload.user.email) {
         await prisma.userAccount.update({
           where: { mits_uid: emailPrefix },
@@ -224,6 +224,7 @@ export async function signup(payload: BasicPayload): Promise<BasicResult> {
       const role = existingAccount.UserTypes.user_type_tag.toLowerCase() === 'admin' ? 'admin'
         : existingAccount.UserTypes.user_type_tag.toLowerCase() === 'faculty' ? 'faculty'
           : 'student';
+
       return {
         success: true,
         statusCode: 200,
@@ -234,8 +235,8 @@ export async function signup(payload: BasicPayload): Promise<BasicResult> {
           role: role,
           mits_uid: existingAccount.mits_uid,
           isActive: existingAccount.is_active,
-          banned: false,
-          // Fetch additional profile info if needed
+          banned: existingAccount.isBanned || false,
+          // Fetch additional profile info
           ...(role === 'student' ? {
             isHosteler: (await prisma.student.findUnique({ where: { mits_uid: existingAccount.mits_uid } }))?.hosteller || false,
           } : {})
@@ -244,15 +245,32 @@ export async function signup(payload: BasicPayload): Promise<BasicResult> {
     }
 
     // 2️⃣ Authorization Check: Must exist in Student or Faculty table to be "whitelisted"
-    const studentProfile = await prisma.student.findUnique({ where: { mits_uid: emailPrefix } });
-    const facultyProfile = await prisma.faculty.findUnique({ where: { mits_uid: emailPrefix } });
+    const studentProfile = await prisma.student.findUnique({
+      where: { mits_uid: emailPrefix },
+      include: { Classes: true, Batches: true }
+    });
+    const facultyProfile = await prisma.faculty.findUnique({
+      where: { mits_uid: emailPrefix },
+      include: { Departments: true }
+    });
 
-    if (!studentProfile && !facultyProfile) {
-      console.warn("Unauthorized signup attempt for:", emailPrefix);
+    const profile = studentProfile || facultyProfile;
+
+    if (!profile) {
+      console.log("User not pre-imported:", emailPrefix);
       return {
         success: false,
         statusCode: 403,
-        message: "Your email is not authorized to access this system. Please contact the administrator.",
+        message: "User not whitelisted in system",
+      };
+    }
+
+    // Check if profile is active
+    if (!profile.is_active || profile.deleted_at !== null) {
+      return {
+        success: false,
+        statusCode: 403,
+        message: "Your profile has been deactivated. Please contact administrator.",
       };
     }
 
