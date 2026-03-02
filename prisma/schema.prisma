@@ -62,27 +62,27 @@ model Classes {
 }
 
 model ClubAdmin {
-  club_admin_id Int       @id
-  club_id       Int
-  role_tag      String
-  is_active     Boolean   @default(true)
-  deleted_at    DateTime?
-  Clubs         Clubs     @relation(fields: [club_id], references: [club_id])
-  Roles         Roles     @relation(fields: [role_tag], references: [role_tag])
+  club_admin_id   Int          @id
+  club_id         Int
+  is_active       Boolean      @default(true)
+  deleted_at      DateTime?
+  role_mapping_id Int?
+  Clubs           Clubs        @relation(fields: [club_id], references: [club_id])
+  RoleMapping     RoleMapping? @relation(fields: [role_mapping_id], references: [role_mapping_id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([is_active])
 }
 
 model Clubs {
-  club_id              Int          @id
-  club_name            String
-  dept_id              Int?
-  coordinator_role_tag String?
-  is_active            Boolean      @default(true)
-  deleted_at           DateTime?
-  ClubAdmin            ClubAdmin[]
-  Roles                Roles?       @relation(fields: [coordinator_role_tag], references: [role_tag])
-  Departments          Departments? @relation(fields: [dept_id], references: [dept_id])
+  club_id                     Int          @id
+  club_name                   String
+  dept_id                     Int?
+  is_active                   Boolean      @default(true)
+  deleted_at                  DateTime?
+  coordinator_role_mapping_id Int?
+  ClubAdmin                   ClubAdmin[]
+  RoleMapping                 RoleMapping? @relation(fields: [coordinator_role_mapping_id], references: [role_mapping_id], onDelete: NoAction, onUpdate: NoAction)
+  Departments                 Departments? @relation(fields: [dept_id], references: [dept_id])
 
   @@index([is_active])
 }
@@ -172,12 +172,14 @@ model Requests {
 }
 
 model RoleMapping {
-  role_mapping_id Int       @id
+  role_mapping_id Int         @id
   role_id         Int
   mits_uid        String
-  is_active       Boolean   @default(true)
+  is_active       Boolean     @default(true)
   deleted_at      DateTime?
-  Roles           Roles     @relation(fields: [role_id], references: [role_id])
+  ClubAdmin       ClubAdmin[]
+  Clubs           Clubs[]
+  Roles           Roles       @relation(fields: [role_id], references: [role_id])
 
   @@index([is_active])
   @@index([mits_uid])
@@ -191,8 +193,6 @@ model Roles {
   deleted_at        DateTime?
   Analytics         Analytics[]
   ClassFaculty      ClassFaculty[]
-  ClubAdmin         ClubAdmin[]
-  Clubs             Clubs[]
   DepartmentFaculty DepartmentFaculty[]
   RoleMapping       RoleMapping[]
 
