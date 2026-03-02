@@ -1,5 +1,6 @@
 import { prisma } from "../db/prisma.js";
 import admin, { firestore } from "../config/firebase.js";
+import { publishRequestWithdrawn } from "../queues/producers/importantProducer.js";
 import { supabase } from "../config/supabase.js";
 
 interface Result {
@@ -596,6 +597,13 @@ export async function withdrawRequest(requestId: string, user: any): Promise<Res
         timestamp: nowISO
       })
     });
+
+    // 5. Send notification to student
+    try {
+      await publishRequestWithdrawn(requestId, [userAccount.mits_uid]);
+    } catch (e) {
+      console.error("Failed to enqueue withdrawn notification:", e);
+    }
 
     return { success: true, statusCode: 200, message: "Request withdrawn successfully" };
   } catch (error: any) {

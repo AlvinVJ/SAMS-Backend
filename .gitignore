@@ -151,4 +151,7 @@ vite.config.ts.timestamp-*
 
 /generated/prisma
 
-/generated/prisma
+# AWS Lambda build artifacts
+lambda_dist/
+*.zip
+test-folder/

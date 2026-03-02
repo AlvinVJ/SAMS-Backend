@@ -3,6 +3,7 @@ import admin from "../config/firebase.js";
 import { firebaseAuth, firestore } from "../config/firebase.js";
 import { processPlacementAttendance } from "./placement.service.js";
 import { processHostellerNotification } from "./hostel.service.js";
+import { publishApprovalAlert } from "../queues/producers/importantProducer.js";
 
 
 async function resolveApproversForRole(
@@ -559,38 +560,9 @@ export async function create_request(
       },
     });
 
-    // 4. Populate ToApprove table for initial level approvers
-    if (initialApprovers.length > 0) {
-      await prisma.toApprove.createMany({
-        data: initialApprovers.map(uid => ({
-          req_id: req_id,
-          approverUID: uid,
-          approvalLevel: 1,
-          approvalType: initialRole || "Approver"
-        })),
-        skipDuplicates: true
-      });
-
-      // 5. Update Analytics pending count
-      try {
-        if (initialRole) {
-          const roleRow = await prisma.roles.findFirst({
-            where: { role_tag: { equals: initialRole, mode: 'insensitive' } }
-          });
-          if (roleRow) {
-            for (const approverUid of initialApprovers) {
-              await prisma.analytics.upsert({
-                where: { mits_uid_role_id: { mits_uid: approverUid, role_id: roleRow.role_id } },
-                create: { mits_uid: approverUid, role_id: roleRow.role_id, pending: 1, approved: 0, rejected: 0 },
-                update: { pending: { increment: 1 } }
-              });
-            }
-          }
-        }
-      } catch (e) {
-        console.error("Analytics pending update failed:", e);
-      }
-    }
+    //publishRequestSubmitted(req_id);
+    publishApprovalAlert(req_id, ["22cs321", "inbox.alvinvj"
+    ]);
 
 
     return {
@@ -729,6 +701,95 @@ export async function searchFaculty(payload: BasicPayload): Promise<BasicResult>
     };
   } catch (error) {
     console.error("searchFaculty service error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
+}
+
+export async function saveFCMToken(payload: BasicPayload): Promise<BasicResult> {
+  try {
+    const { mits_uid } = payload.user;
+    const { fcm_token } = payload.body;
+
+    // We optionally take session_id from client, or fallback to an auto-generated one if missing
+    // Since Firebase Web SDK doesn't natively expose a session ID, we can use the token itself as the session ID mapping,
+    // or just let the client send a unique device identifier.
+    // For simplicity, we define session_id as a composite of mits_uid + last 8 chars of token if not provided.
+    const session_id = payload.body.session_id || fcm_token.slice(-8);
+
+    if (!fcm_token) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "fcm_token is required",
+      };
+    }
+
+    // Upsert the token for this session
+    await prisma.fCMTokens.upsert({
+      where: {
+        mits_uid_session_id: {
+          mits_uid,
+          session_id,
+        },
+      },
+      update: {
+        fcm_token,
+        created_at: new Date(),
+      },
+      create: {
+        mits_uid,
+        session_id,
+        fcm_token,
+      },
+    });
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "FCM token saved successfully",
+    };
+  } catch (error) {
+    console.error("saveFCMToken service error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
+}
+
+export async function deleteFCMToken(payload: BasicPayload): Promise<BasicResult> {
+  try {
+    const { mits_uid } = payload.user;
+    const { session_id } = payload.body;
+
+    if (!session_id) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "session_id is required",
+      };
+    }
+
+    // Delete the token for this specific session/device
+    await prisma.fCMTokens.deleteMany({
+      where: {
+        mits_uid: mits_uid,
+        session_id: session_id,
+      },
+    });
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "FCM token deleted successfully",
+    };
+  } catch (error) {
+    console.error("deleteFCMToken service error:", error);
     return {
       success: false,
       statusCode: 500,

@@ -4,7 +4,6 @@ import morgan from "morgan";
 import { prisma } from "./db/prisma.js";
 import cors from "cors";
 
-
 declare global {
   namespace Express {
     interface Request {
@@ -19,10 +18,7 @@ import { facultyRouter } from "./routes/faculty.routes.js";
 import { studentRouter } from "./routes/student.routes.js";
 import { helperRouter } from "./routes/helper.routes.js";
 // Import the new router at the top
-import { requestsRouter } from "./routes/requests.routes.js"; // or just .routes if .js fails
-
-// ... inside your app setup, near other routes like admin or user
-
+import { requestsRouter } from "./routes/requests.routes.js";
 
 const app = express();
 app.use(express.json());
@@ -81,8 +77,15 @@ app.get("/ping", async (_req, res) => {
   });
 });
 
-app.listen(3000, () => {
-  console.log("Server running on port 3000");
-});
+async function startServer() {
+  try {
+    app.listen(3000, () => {
+      console.log("Server running on port 3000");
+    });
+  } catch (error) {
+    console.error("❌ Failed to start server:", error);
+    process.exit(1);
+  }
+}
 
-
+startServer();
