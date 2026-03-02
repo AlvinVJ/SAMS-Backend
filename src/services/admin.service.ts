@@ -1888,18 +1888,22 @@ export async function bulkImportClubsService(payload: {
   clubs: any[];
 }): Promise<Result> {
   try {
-    const roles = await prisma.roles.findMany();
-    const departments = await prisma.departments.findMany();
-    const allBatches = await prisma.batches.findMany(); // Added for academic data context
+    const roles = await prisma.roles.findMany({ where: { is_active: true } });
+    const leadRole = roles.find(r => r.role_tag === "CLUB_LEAD");
+    const coordRole = roles.find(r => r.role_tag === "CLUB_COORDINATOR");
 
-    // Helper to get value by case-insensitive key
-    const getVal = (row: any, key: string) => {
-      const foundKey = Object.keys(row).find(k => k.toLowerCase().replace(/[\s_]/g, '') === key.toLowerCase().replace(/[\s_]/g, ''));
-      return foundKey ? row[foundKey] : undefined;
-    };
+    if (!leadRole || !coordRole) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "Required roles CLUB_LEAD or CLUB_COORDINATOR not found in database. Please create them first.",
+      };
+    }
+
+    const departments = await prisma.departments.findMany();
 
     await prisma.$transaction(async (tx) => {
-      // Get current max IDs since they aren't autoincrementing in some schemas
+      // Manual ID management
       const maxClub = await tx.clubs.aggregate({ _max: { club_id: true } });
       let nextClubId = (maxClub._max.club_id || 0) + 1;
 
@@ -1914,13 +1918,13 @@ export async function bulkImportClubsService(payload: {
         if (!input) return undefined;
         const normalizedInput = input.trim();
 
-        // 1. Check if it's already a mits_uid (exists in UserAccount) - Case Insensitive
+        // 1. Check if it's already a mits_uid - Case Insensitive
         const user = await tx.userAccount.findFirst({
           where: { mits_uid: { equals: normalizedInput, mode: 'insensitive' } }
         });
         if (user) return user.mits_uid;
 
-        // 2. Search in Student by mits_uid or name - Case Insensitive
+        // 2. Search in Student by mits_uid or name
         const student = await tx.student.findFirst({
           where: {
             OR: [
@@ -1931,7 +1935,7 @@ export async function bulkImportClubsService(payload: {
         });
         if (student) return student.mits_uid;
 
-        // 3. Search in Faculty by mits_uid or name - Case Insensitive
+        // 3. Search in Faculty by mits_uid or name
         const faculty = await tx.faculty.findFirst({
           where: {
             OR: [
@@ -1942,12 +1946,10 @@ export async function bulkImportClubsService(payload: {
         });
         if (faculty) return faculty.mits_uid;
 
-        return normalizedInput; // Fallback to trimmed input
+        return normalizedInput; // Fallback
       };
 
-      let rowNum = 2; // Header is line 1
-
-      // Helper to get value by more flexible case-insensitive key
+      // Helper to get value by flexible case-insensitive key
       const getVal = (row: any, target: string) => {
         const normalizedTarget = target.toLowerCase().replace(/[\s_]/g, '');
         const foundKey = Object.keys(row).find(k => {
@@ -1959,106 +1961,95 @@ export async function bulkImportClubsService(payload: {
         return foundKey ? row[foundKey] : undefined;
       };
 
+      let rowNum = 2;
       for (const row of payload.clubs) {
         const club_name = getVal(row, "clubname") || getVal(row, "name");
         const club_department = getVal(row, "clubdepartment") || getVal(row, "department");
-        const club_lead = getVal(row, "clublead") || getVal(row, "lead") || getVal(row, "leadid");
-        const club_coordinator = getVal(row, "clubcoordinator") || getVal(row, "coordinator") || getVal(row, "coordinatorid");
+        const club_lead_input = getVal(row, "clublead") || getVal(row, "lead") || getVal(row, "leadid");
+        const club_coordinator_input = getVal(row, "clubcoordinator") || getVal(row, "coordinator") || getVal(row, "coordinatorid");
 
-        // Skip empty rows
-        if (!club_name && !club_lead && !club_coordinator && !club_department) {
+        if (!club_name && !club_lead_input && !club_coordinator_input && !club_department) {
           rowNum++;
           continue;
         }
 
-        if (!club_name) throw new Error(`Error at line ${rowNum}: Club name is required. Headers received: ${Object.keys(row).join(", ")}`);
+        if (!club_name) throw new Error(`Error at line ${rowNum}: Club name is required.`);
 
-        // 1. Resolve Department
-        const dept = departments.find(d => d.dept_name.toLowerCase() === club_department?.toLowerCase());
+        const dept = departments.find(d =>
+          d.dept_name.toLowerCase() === club_department?.toString().toLowerCase() ||
+          d.dept_id.toString() === club_department?.toString()
+        );
         const dept_id = dept ? dept.dept_id : null;
 
-        // 2. Resolve Lead and Coordinator UIDs
-        const leadUid = await resolveUserUid(club_lead);
-        const coordUid = await resolveUserUid(club_coordinator);
+        const leadUid = await resolveUserUid(club_lead_input);
+        const coordUid = await resolveUserUid(club_coordinator_input);
 
-        console.log(`Row ${rowNum}: club_name=${club_name}, club_lead=${club_lead} -> leadUid=${leadUid}, club_coordinator=${club_coordinator} -> coordUid=${coordUid}`);
-
-        // 3. Generate/Ensure Role Tags
-        const sanitizedName = club_name.toUpperCase().replace(/\s+/g, "_").replace(/[^A-Z0-9_]/g, "");
-        const leadTag = `CLUB_LEAD_${sanitizedName}`;
-        const coordTag = `CLUB_COORD_${sanitizedName}`;
-
-        // Ensure Lead Role
-        let leadRole = roles.find(r => r.role_tag === leadTag);
-        if (!leadRole) {
-          leadRole = await tx.roles.create({
-            data: { role_tag: leadTag, role_desc: `Lead of ${club_name}`, is_active: true }
+        // 1. Create/Retrieve Role Mappings for Coordinator (Faculty)
+        let coordMappingId: number | null = null;
+        if (coordUid) {
+          const existingCoord = await tx.roleMapping.findFirst({
+            where: { mits_uid: coordUid, role_id: coordRole.role_id, is_active: true }
           });
+          if (existingCoord) {
+            coordMappingId = existingCoord.role_mapping_id;
+          } else {
+            const newCoord = await tx.roleMapping.create({
+              data: {
+                role_mapping_id: nextRoleMappingId++,
+                role_id: coordRole.role_id,
+                mits_uid: coordUid,
+                is_active: true
+              }
+            });
+            coordMappingId = newCoord.role_mapping_id;
+          }
         }
 
-        // Ensure Coordinator Role
-        let coordRole = roles.find(r => r.role_tag === coordTag);
-        if (!coordRole) {
-          coordRole = await tx.roles.create({
-            data: { role_tag: coordTag, role_desc: `Coordinator of ${club_name}`, is_active: true }
+        // 2. Create/Retrieve Role Mappings for Lead (Student)
+        let leadMappingId: number | null = null;
+        if (leadUid) {
+          const existingLead = await tx.roleMapping.findFirst({
+            where: { mits_uid: leadUid, role_id: leadRole.role_id, is_active: true }
           });
+          if (existingLead) {
+            leadMappingId = existingLead.role_mapping_id;
+          } else {
+            const newLead = await tx.roleMapping.create({
+              data: {
+                role_mapping_id: nextRoleMappingId++,
+                role_id: leadRole.role_id,
+                mits_uid: leadUid,
+                is_active: true
+              }
+            });
+            leadMappingId = newLead.role_mapping_id;
+          }
         }
 
-        // 4. Create Club
+        // 3. Create Club
+        const currentClubId = nextClubId++;
         await tx.clubs.create({
           data: {
-            club_id: nextClubId,
+            club_id: currentClubId,
             club_name: club_name,
             dept_id: dept_id,
-            coordinator_role_tag: coordTag,
+            coordinator_role_mapping_id: coordMappingId,
             is_active: true
           }
         });
 
-        // 5. Link Lead in ClubAdmin
-        await tx.clubAdmin.create({
-          data: {
-            club_admin_id: nextClubAdminId++,
-            club_id: nextClubId++,
-            role_tag: leadTag,
-            is_active: true
-          }
-        });
-
-        // 6. Create Role Mappings for specific users (if resolved)
-        if (leadUid) {
-          await tx.roleMapping.upsert({
-            where: { role_mapping_id: nextRoleMappingId },
-            create: {
-              role_mapping_id: nextRoleMappingId++,
-              role_id: leadRole.role_id,
-              mits_uid: leadUid,
+        // 4. Link Lead in ClubAdmin
+        if (leadMappingId) {
+          await tx.clubAdmin.create({
+            data: {
+              club_admin_id: nextClubAdminId++,
+              club_id: currentClubId,
+              role_mapping_id: leadMappingId,
               is_active: true
-            },
-            update: {
-              role_id: leadRole.role_id,
-              is_active: true,
-              deleted_at: null
             }
           });
         }
 
-        if (coordUid) {
-          await tx.roleMapping.upsert({
-            where: { role_mapping_id: nextRoleMappingId },
-            create: {
-              role_mapping_id: nextRoleMappingId++,
-              role_id: coordRole.role_id,
-              mits_uid: coordUid,
-              is_active: true
-            },
-            update: {
-              role_id: coordRole.role_id,
-              is_active: true,
-              deleted_at: null
-            }
-          });
-        }
         rowNum++;
       }
     });
@@ -2066,7 +2057,7 @@ export async function bulkImportClubsService(payload: {
     return {
       success: true,
       statusCode: 201,
-      message: "Clubs imported successfully",
+      message: "Clubs imported successfully using generic roles",
     };
   } catch (error: any) {
     console.error("bulkImportClubsService error:", error);
