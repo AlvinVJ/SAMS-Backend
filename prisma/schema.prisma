@@ -1,6 +1,6 @@
 generator client {
   provider      = "prisma-client-js"
-  output   = "../generated"
+  output        = "../generated"
   binaryTargets = ["rhel-openssl-3.0.x"]
 }
 
@@ -31,6 +31,20 @@ model Batches {
   @@index([is_active])
 }
 
+model ClassFaculty {
+  class_id   Int
+  mits_uid   String
+  role_tag   String
+  is_active  Boolean   @default(true)
+  deleted_at DateTime?
+  Classes    Classes   @relation(fields: [class_id], references: [class_id])
+  Faculty    Faculty   @relation(fields: [mits_uid], references: [mits_uid])
+  Roles      Roles     @relation(fields: [role_tag], references: [role_tag])
+
+  @@id([class_id, mits_uid, role_tag])
+  @@index([is_active])
+}
+
 model Classes {
   class_id     Int            @id @default(autoincrement())
   batch_id     Int
@@ -43,21 +57,7 @@ model Classes {
   Departments  Departments    @relation(fields: [dept_id], references: [dept_id])
   Student      Student[]
 
-  @@index([is_active])
   @@index([batch_id])
-}
-
-model ClassFaculty {
-  class_id   Int
-  mits_uid   String
-  role_tag   String
-  is_active  Boolean   @default(true)
-  deleted_at DateTime?
-  Classes    Classes   @relation(fields: [class_id], references: [class_id])
-  Faculty    Faculty   @relation(fields: [mits_uid], references: [mits_uid])
-  Roles      Roles     @relation(fields: [role_tag], references: [role_tag])
-
-  @@id([class_id, mits_uid, role_tag])
   @@index([is_active])
 }
 
@@ -87,6 +87,17 @@ model Clubs {
   @@index([is_active])
 }
 
+model DepartmentFaculty {
+  mits_uid    String      @id
+  dept_id     Int
+  role_id     Int?
+  is_active   Boolean?
+  deleted_at  DateTime?   @db.Timestamp(6)
+  Departments Departments @relation(fields: [dept_id], references: [dept_id], onDelete: NoAction, onUpdate: NoAction)
+  Faculty     Faculty     @relation(fields: [mits_uid], references: [mits_uid], onDelete: NoAction, onUpdate: NoAction)
+  Roles       Roles?      @relation(fields: [role_id], references: [role_id], onDelete: NoAction, onUpdate: NoAction)
+}
+
 model Departments {
   dept_id           Int                 @id @default(autoincrement())
   dept_name         String
@@ -98,6 +109,16 @@ model Departments {
   Faculty           Faculty[]
 
   @@index([is_active])
+}
+
+model FCMTokens {
+  mits_uid   String
+  session_id String
+  fcm_token  String
+  created_at DateTime @default(now())
+
+  @@id([mits_uid, session_id])
+  @@index([mits_uid])
 }
 
 model Faculty {
@@ -112,8 +133,16 @@ model Faculty {
   DepartmentFaculty DepartmentFaculty?
   Departments       Departments        @relation(fields: [department_id], references: [dept_id])
 
-  @@index([is_active])
   @@index([department_id])
+  @@index([is_active])
+}
+
+model ProcedureVisibility {
+  proc_id    String
+  user_type  Int
+  Procedures Procedures @relation(fields: [proc_id], references: [proc_id])
+
+  @@id([proc_id, user_type])
 }
 
 model Procedures {
@@ -127,14 +156,6 @@ model Procedures {
   Requests            Requests[]
 
   @@index([is_active])
-}
-
-model ProcedureVisibility {
-  proc_id    String
-  user_type  Int
-  Procedures Procedures @relation(fields: [proc_id], references: [proc_id])
-
-  @@id([proc_id, user_type])
 }
 
 model Requests {
@@ -191,31 +212,8 @@ model Student {
   Batches    Batches   @relation(fields: [batch_id], references: [batch_id])
   Classes    Classes   @relation(fields: [class_id], references: [class_id])
 
-  @@index([is_active])
   @@index([class_id])
-}
-
-model UserAccount {
-  mits_uid   String    @id
-  auth_uid   String    @unique
-  user_type  Int
-  is_active  Boolean   @default(true)
-  deleted_at DateTime?
-  email      String?   @unique
-  FCMTokens   FCMTokens[]
-  UserTypes  UserTypes @relation(fields: [user_type], references: [user_type_id])
-
   @@index([is_active])
-  @@index([user_type])
-  @@index([auth_uid])
-}
-
-model UserTypes {
-  user_type_id  Int           @id
-  user_type_tag String        @unique
-  description   String?
-  is_active     Boolean       @default(true)
-  UserAccount   UserAccount[]
 }
 
 model ToApprove {
@@ -229,36 +227,24 @@ model ToApprove {
   @@id([req_id, approverUID])
 }
 
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
-model DepartmentFaculty {
-  mits_uid    String      @id
-  dept_id     Int
-  role_id     Int?
-  is_active   Boolean?
-  deleted_at  DateTime?   @db.Timestamp(6)
-  Departments Departments @relation(fields: [dept_id], references: [dept_id], onDelete: NoAction, onUpdate: NoAction)
-  Faculty     Faculty     @relation(fields: [mits_uid], references: [mits_uid], onDelete: NoAction, onUpdate: NoAction)
-  Roles       Roles?      @relation(fields: [role_id], references: [role_id], onDelete: NoAction, onUpdate: NoAction)
+model UserAccount {
+  mits_uid   String    @id
+  auth_uid   String    @unique
+  user_type  Int
+  is_active  Boolean   @default(true)
+  deleted_at DateTime?
+  email      String?   @unique
+  UserTypes  UserTypes @relation(fields: [user_type], references: [user_type_id])
+
+  @@index([auth_uid])
+  @@index([is_active])
+  @@index([user_type])
 }
 
-model FCMTokens {
-  mits_uid   String
-  session_id String
-  fcm_token  String
-  created_at DateTime @default(now())
-
-  @@id([mits_uid, session_id])
-  @@index([mits_uid])
-}
-
-model FCMTokens {
-  mits_uid   String
-  session_id String
-  fcm_token  String
-  created_at DateTime @default(now())
-
-  UserAccount UserAccount @relation(fields: [mits_uid], references: [mits_uid], onDelete: Cascade)
-
-  @@id([mits_uid, session_id])
-  @@index([mits_uid])
+model UserTypes {
+  user_type_id  Int           @id
+  user_type_tag String        @unique
+  description   String?
+  is_active     Boolean       @default(true)
+  UserAccount   UserAccount[]
 }
