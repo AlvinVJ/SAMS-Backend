@@ -135,25 +135,51 @@ export async function fetch_roles(
       },
     });
 
-    // 2️⃣ From ClubAdmin → Roles (no user directly, skip user mapping)
+    // 2️⃣ From ClubAdmin → RoleMapping → Roles
     const clubAdmins = await prisma.clubAdmin.findMany({
       where: {
-        role_tag: roleFilter,
         is_active: true,
+        RoleMapping: {
+          is_active: true,
+          Roles: {
+            role_tag: roleFilter,
+          },
+        },
       },
       select: {
-        role_tag: true,
+        RoleMapping: {
+          select: {
+            Roles: {
+              select: {
+                role_tag: true,
+              },
+            },
+          },
+        },
       },
     });
 
-    // 3️⃣ From Clubs (coordinator role)
+    // 3️⃣ From Clubs (coordinator role) → RoleMapping → Roles
     const clubs = await prisma.clubs.findMany({
       where: {
-        coordinator_role_tag: roleFilter,
         is_active: true,
+        RoleMapping: {
+          is_active: true,
+          Roles: {
+            role_tag: roleFilter,
+          },
+        },
       },
       select: {
-        coordinator_role_tag: true,
+        RoleMapping: {
+          select: {
+            Roles: {
+              select: {
+                role_tag: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -178,8 +204,8 @@ export async function fetch_roles(
     const uniqueRoleTags = new Set<string>();
 
     classFaculty.forEach(r => r.role_tag && uniqueRoleTags.add(r.role_tag.toUpperCase()));
-    clubAdmins.forEach(r => r.role_tag && uniqueRoleTags.add(r.role_tag.toUpperCase()));
-    clubs.forEach(r => r.coordinator_role_tag && uniqueRoleTags.add(r.coordinator_role_tag.toUpperCase()));
+    clubAdmins.forEach(r => r.RoleMapping?.Roles.role_tag && uniqueRoleTags.add(r.RoleMapping.Roles.role_tag.toUpperCase()));
+    clubs.forEach(r => r.RoleMapping?.Roles.role_tag && uniqueRoleTags.add(r.RoleMapping.Roles.role_tag.toUpperCase()));
     roles.forEach(r => r.role_tag && uniqueRoleTags.add(r.role_tag.toUpperCase()));
 
     const data = Array.from(uniqueRoleTags).map(tag => ({
