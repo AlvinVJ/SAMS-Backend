@@ -9,13 +9,17 @@
     "build": "prisma generate && tsc",
     "start": "node dist/index.js",
     "backfill": "tsx src/scripts/backfill_to_approve.ts",
-    "verify-db": "tsx src/scripts/verify_to_approve.ts"
+    "verify-db": "tsx src/scripts/verify_to_approve.ts",
+    "worker:important": "tsx watch src/queues/workers/importantWorker.ts",
+    "worker:push": "tsx watch src/queues/workers/pushWorker.ts",
+    "dev:all": "concurrently \"npm run dev\" \"npm run worker:important\" \"npm run worker:push\""
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@aws-sdk/client-sqs": "^3.998.0",
     "@prisma/adapter-mssql": "^7.2.0",
     "@prisma/adapter-pg": "^7.3.0",
     "@prisma/client": "7.2.0",
@@ -36,6 +40,8 @@
     "@types/mssql": "^9.1.8",
     "@types/multer": "^2.0.0",
     "@types/node": "^25.0.3",
+    "concurrently": "^9.2.1",
+    "esbuild": "^0.27.3",
     "nodemon": "^3.1.11",
     "prisma": "7.2.0",
     "ts-node-dev": "^2.0.0",
