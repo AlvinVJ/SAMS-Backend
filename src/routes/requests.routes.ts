@@ -2,13 +2,17 @@ import { Router } from "express";
 import { createRequest, getMyRequests, getStudentDashboardData, withdrawRequest, getRequestDetails } from "../controllers/requests.controller.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { requireRole } from "../middleware/requireRole.js";
+import multer from "multer";
+
+const upload = multer({ storage: multer.memoryStorage() });
 
 export const requestsRouter = Router();
 
 requestsRouter.post(
   "/create",
   requireAuth,
-  requireRole("student"),
+  requireRole("student", "faculty"),
+  upload.single('file'),
   createRequest
 );
 
