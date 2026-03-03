@@ -2,6 +2,9 @@ import { prisma } from "../db/prisma.js";
 import admin, { firestore } from "../config/firebase.js";
 import { publishRequestWithdrawn } from "../queues/producers/importantProducer.js";
 import { supabase } from "../config/supabase.js";
+import { processPlacementAttendance } from "./placement.service.js";
+import { processHostellerNotification } from "./hostel.service.js";
+import { publishApprovalAlert } from "../queues/producers/importantProducer.js";
 
 interface Result {
   success: boolean;
@@ -52,7 +55,9 @@ export function getLastLevelRoleTag(procData: any): string {
 
 // Helper: Resolve Approvers
 async function resolveApproversForRole(roleTag: string, requesterUid: string): Promise<string[]> {
-  const normalizedTag = roleTag.toLowerCase();
+  const normalizedTag = roleTag.toLowerCase().trim();
+
+  // 1. CLASS ADVISOR
   if (normalizedTag === "class_advisor") {
     const student = await prisma.student.findUnique({
       where: { mits_uid: requesterUid },
@@ -70,6 +75,42 @@ async function resolveApproversForRole(roleTag: string, requesterUid: string): P
     });
     return advisors.map(a => a.mits_uid);
   }
+
+  // 2. HOD / ASSISTANT HOD
+  if (normalizedTag === "hod" || normalizedTag === "assistant_hod") {
+    let deptId: number | null = null;
+    const student = await prisma.student.findUnique({
+      where: { mits_uid: requesterUid },
+      include: { Classes: true }
+    });
+    if (student && student.Classes) {
+      deptId = student.Classes.dept_id;
+    } else {
+      const faculty = await prisma.faculty.findUnique({
+        where: { mits_uid: requesterUid },
+        select: { department_id: true }
+      });
+      if (faculty) deptId = faculty.department_id;
+    }
+    if (!deptId) return [];
+
+    const approvers = await prisma.departmentFaculty.findMany({
+      where: {
+        dept_id: deptId,
+        is_active: true,
+        deleted_at: null,
+        Roles: {
+          role_tag: normalizedTag === 'assistant_hod'
+            ? { in: ['ASSISTANT_HOD', 'ASST_HOD'], mode: 'insensitive' }
+            : { equals: normalizedTag, mode: 'insensitive' }
+        }
+      },
+      select: { mits_uid: true }
+    });
+    return approvers.map(a => a.mits_uid);
+  }
+
+  // 3. GENERIC ROLES
   const role = await prisma.roles.findFirst({
     where: { role_tag: { equals: normalizedTag, mode: 'insensitive' } },
     select: { role_id: true },
@@ -177,18 +218,91 @@ export async function createRequest(payload: { body: any; user: any }): Promise<
   try {
     const { procedureId, formData } = payload.body;
     const { uid, email, name: tokenName } = payload.user;
-    const procedure = await prisma.procedures.findUnique({ where: { proc_id: procedureId } });
-    if (!procedure || !procedure.is_active) {
-      return { success: false, statusCode: 404, message: "Procedure not found" };
-    }
-    const userAccount = await prisma.userAccount.findUnique({ where: { auth_uid: uid } });
+
+    const userAccount = await prisma.userAccount.findUnique({
+      where: { auth_uid: uid },
+      include: { UserTypes: true }
+    });
     if (!userAccount) {
       return { success: false, statusCode: 404, message: "User account not linked" };
     }
-    const student = await prisma.student.findUnique({ where: { mits_uid: userAccount.mits_uid } });
-    const studentName = student?.name || tokenName || email || "Student";
+
+    const mits_uid = userAccount.mits_uid;
+
+    // 1. Accessibility Check
+    const visibleTypes = new Set<number>();
+    visibleTypes.add(userAccount.user_type);
+
+    const roleTagsSet = new Set<string>();
+    const globalRoles = await prisma.roleMapping.findMany({
+      where: { mits_uid: { equals: mits_uid, mode: 'insensitive' }, is_active: true },
+      include: { Roles: true }
+    });
+    globalRoles.forEach(r => roleTagsSet.add(r.Roles.role_tag));
+
+    const classRoles = await prisma.classFaculty.findMany({
+      where: { mits_uid: { equals: mits_uid, mode: 'insensitive' }, is_active: true },
+      select: { role_tag: true }
+    });
+    classRoles.forEach(r => roleTagsSet.add(r.role_tag));
+
+    const userTypes = await prisma.userTypes.findMany({ where: { is_active: true } });
+    const normalize = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const normRoleTags = Array.from(roleTagsSet).map(t => normalize(t));
+
+    userTypes.forEach(ut => {
+      if (normRoleTags.includes(normalize(ut.user_type_tag))) {
+        visibleTypes.add(ut.user_type_id);
+      }
+    });
+
+    const procedure = await prisma.procedures.findFirst({
+      where: {
+        proc_id: procedureId,
+        is_active: true,
+        ProcedureVisibility: {
+          some: {
+            user_type: { in: Array.from(visibleTypes) },
+          },
+        },
+      },
+    });
+
+    if (!procedure) {
+      return { success: false, statusCode: 403, message: "Procedure not accessible or found" };
+    }
+
+    const student = await prisma.student.findUnique({ where: { mits_uid } });
+    const faculty = !student ? await prisma.faculty.findUnique({ where: { mits_uid } }) : null;
+    const studentName = student?.name || faculty?.name || tokenName || email || "User";
+
     const procDoc = await firestore.collection("procedures").doc(procedureId).get();
-    let approvalLevelsDefinition = procDoc.exists ? (procDoc.data()?.approvalLevels || []) : [];
+    const procData = procDoc.data();
+    let approvalLevelsDefinition = procData?.approvalLevels || [];
+
+    // 2. SYSTEM HOOK INTERCEPTION
+    const hookData = formData.hook_data || formData.student_list || formData.uids || [];
+    if (procData?.system_hook === "PLACEMENT_BULK" && procData?.hook_trigger === "START") {
+      return await processPlacementAttendance({
+        procedureId,
+        hookData: Array.isArray(hookData) ? hookData : [],
+        coordinatorUid: mits_uid,
+        eventName: formData.company_name || formData.event_name || formData.title || "Placement Event",
+        date: formData.test_date || formData.date || new Date().toISOString().split('T')[0],
+        startTime: formData.start_time,
+        endTime: formData.end_time,
+      }) as Result;
+    }
+
+    if (procData?.system_hook === "OVERNIGHT_HOSTEL" && procData?.hook_trigger === "START") {
+      return await processHostellerNotification({
+        procedureId,
+        hookData: Array.isArray(hookData) ? hookData : [],
+        coordinatorUid: mits_uid,
+        eventName: formData.event_name || formData.title || "Hostel Notification",
+        date: formData.event_date || formData.date || new Date().toISOString().split('T')[0],
+      }) as Result;
+    }
 
     const requestId = generateId();
     const nowISO = new Date().toISOString();
