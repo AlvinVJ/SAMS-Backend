@@ -754,65 +754,115 @@ export async function deleteClass(class_id: number): Promise<Result> {
 
 export async function getUsersService(search?: string): Promise<Result> {
   try {
-    const whereClause: any = { is_active: true, deleted_at: null };
+    // 1. Find all matching UIDs from Faculty and Student tables
+    let studentMatches: any[] = [];
+    let facultyMatches: any[] = [];
+    let accountMatchesByEmail: any[] = [];
+
+    const commonWhere = { is_active: true, deleted_at: null };
 
     if (search) {
-      const studentMatches = await prisma.student.findMany({
+      studentMatches = await prisma.student.findMany({
         where: {
-          OR: [
-            { name: { contains: search, mode: 'insensitive' } },
-            { mits_uid: { contains: search, mode: 'insensitive' } }
-          ]
+          AND: [
+            commonWhere,
+            {
+              OR: [
+                { name: { contains: search, mode: "insensitive" } },
+                { mits_uid: { contains: search, mode: "insensitive" } },
+              ],
+            },
+          ],
         },
-        select: { mits_uid: true }
       });
-      const facultyMatches = await prisma.faculty.findMany({
+
+      facultyMatches = await prisma.faculty.findMany({
         where: {
-          OR: [
-            { name: { contains: search, mode: 'insensitive' } },
-            { mits_uid: { contains: search, mode: 'insensitive' } }
-          ]
+          AND: [
+            commonWhere,
+            {
+              OR: [
+                { name: { contains: search, mode: "insensitive" } },
+                { mits_uid: { contains: search, mode: "insensitive" } },
+              ],
+            },
+          ],
         },
-        select: { mits_uid: true }
       });
-      const searchUids = [...studentMatches.map(s => s.mits_uid), ...facultyMatches.map(f => f.mits_uid)];
-      whereClause.OR = [
-        { mits_uid: { in: searchUids } },
-        { email: { contains: search, mode: 'insensitive' } }
-      ];
+
+      accountMatchesByEmail = await prisma.userAccount.findMany({
+        where: {
+          AND: [
+            commonWhere,
+            { email: { contains: search, mode: "insensitive" } },
+          ],
+        },
+        select: { mits_uid: true },
+      });
+    } else {
+      // If no search, maybe just return recent or all? 
+      // Original logic fetched all users.
+      // But let's limit to something reasonable if possible, or follow original logic.
+      // Original logic did prisma.userAccount.findMany({ where: { is_active: true, deleted_at: null } })
     }
 
-    const users = await prisma.userAccount.findMany({
-      where: whereClause,
-      include: {
-        UserTypes: true,
-      },
-      orderBy: { mits_uid: 'asc' }
-    });
+    const matchedUids = new Set([
+      ...studentMatches.map((s) => s.mits_uid),
+      ...facultyMatches.map((f) => f.mits_uid),
+      ...accountMatchesByEmail.map((a) => a.mits_uid),
+    ]);
+
+    // If no search, fallback to fetching all user accounts as per original logic
+    let uidsToProcess = Array.from(matchedUids);
+    if (!search) {
+      const allAccounts = await prisma.userAccount.findMany({
+        where: commonWhere,
+        select: { mits_uid: true },
+        take: 100, // Safety limit
+      });
+      uidsToProcess = allAccounts.map(a => a.mits_uid);
+    }
 
     const formatted = [];
-    for (const user of users) {
-      const faculty = await prisma.faculty.findUnique({
-        where: { mits_uid: user.mits_uid },
-        include: { Departments: true }
-      });
-      const student = await prisma.student.findUnique({
-        where: { mits_uid: user.mits_uid },
-        include: {
-          Classes: { include: { Departments: true } },
-          Batches: true
-        }
-      });
-      const roleMappings = await prisma.roleMapping.findMany({
-        where: { mits_uid: user.mits_uid, is_active: true },
-        include: { Roles: true }
+    for (const mits_uid of uidsToProcess) {
+      const userAccount = await prisma.userAccount.findUnique({
+        where: { mits_uid },
+        include: { UserTypes: true },
       });
 
+      const faculty = await prisma.faculty.findUnique({
+        where: { mits_uid },
+        include: { Departments: true },
+      });
+
+      const student = await prisma.student.findUnique({
+        where: { mits_uid },
+        include: {
+          Classes: { include: { Departments: true } },
+          Batches: true,
+        },
+      });
+
+      const roleMappings = await prisma.roleMapping.findMany({
+        where: { mits_uid, is_active: true },
+        include: { Roles: true },
+      });
+
+      // Synthesize user object if account doesn't exist
+      const userBase = userAccount || {
+        mits_uid,
+        is_active: true,
+        email: faculty?.email || null,
+        UserTypes: {
+          user_type_tag: faculty ? "FACULTY" : (student ? "STUDENT" : "UNKNOWN"),
+        },
+      };
+
       formatted.push({
-        ...user,
+        ...userBase,
         Faculty: faculty,
         Student: student,
-        RoleMapping: roleMappings
+        RoleMapping: roleMappings,
       });
     }
 
@@ -824,6 +874,85 @@ export async function getUsersService(search?: string): Promise<Result> {
     };
   } catch (error) {
     console.error("getUsersService error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: "Internal server error",
+    };
+  }
+}
+
+
+export async function searchFacultyService(query: string, dept_id?: number): Promise<Result> {
+  try {
+    const faculty = await prisma.faculty.findMany({
+      where: {
+        AND: [
+          {
+            OR: [
+              { name: { contains: query, mode: "insensitive" } },
+              { mits_uid: { contains: query, mode: "insensitive" } },
+            ],
+          },
+          dept_id ? { department_id: dept_id } : {},
+        ],
+        is_active: true,
+      },
+      include: {
+        Departments: true,
+      },
+      take: 20,
+    });
+
+    const students = await prisma.student.findMany({
+      where: {
+        AND: [
+          {
+            OR: [
+              { name: { contains: query, mode: "insensitive" } },
+              { mits_uid: { contains: query, mode: "insensitive" } },
+            ],
+          },
+          dept_id ? { Classes: { dept_id: dept_id } } : {},
+        ],
+        is_active: true,
+      },
+      include: {
+        Classes: { include: { Departments: true } },
+      },
+      take: 20,
+    });
+
+    const formattedFaculty = faculty.map((f) => ({
+      mits_uid: f.mits_uid,
+      name: f.name,
+      email: f.email,
+      Faculty: f,
+      UserTypes: {
+        user_type_tag: "FACULTY",
+      },
+      RoleMapping: [],
+    }));
+
+    const formattedStudents = students.map((s) => ({
+      mits_uid: s.mits_uid,
+      name: s.name,
+      email: null, // Students don't have email in the schema viewed so far, but let's be safe
+      Student: s,
+      UserTypes: {
+        user_type_tag: "STUDENT",
+      },
+      RoleMapping: [],
+    }));
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "User search results",
+      data: [...formattedFaculty, ...formattedStudents],
+    };
+  } catch (error) {
+    console.error("searchFacultyService error:", error);
     return {
       success: false,
       statusCode: 500,
@@ -844,18 +973,27 @@ export async function updateUserService(payload: {
   try {
     const { mits_uid, name, email, is_active, is_banned, user_type_id, role_ids } = payload;
 
-    const user = await prisma.userAccount.findUnique({
+    const userAccount = await prisma.userAccount.findUnique({
       where: { mits_uid },
       include: { UserTypes: true },
     });
 
-    if (!user) {
+    const faculty = await prisma.faculty.findUnique({
+      where: { mits_uid },
+      include: { Departments: true },
+    });
+
+    const student = await prisma.student.findUnique({
+      where: { mits_uid },
+    });
+
+    if (!userAccount && !faculty && !student) {
       return { success: false, statusCode: 404, message: "User not found" };
     }
 
     await prisma.$transaction(async (tx) => {
-      // 1. Update UserAccount
-      if (is_active !== undefined || email !== undefined || is_banned !== undefined || user_type_id !== undefined) {
+      // 1. Update UserAccount if exists
+      if (userAccount && (is_active !== undefined || email !== undefined || is_banned !== undefined || user_type_id !== undefined)) {
         await tx.userAccount.update({
           where: { mits_uid },
           data: {
@@ -868,7 +1006,7 @@ export async function updateUserService(payload: {
       }
 
       // 2. Update Profile
-      if (user.UserTypes.user_type_tag === "FACULTY") {
+      if (faculty) {
         await tx.faculty.updateMany({
           where: { mits_uid },
           data: {
@@ -877,7 +1015,7 @@ export async function updateUserService(payload: {
             ...(is_active !== undefined && { is_active }),
           },
         });
-      } else if (user.UserTypes.user_type_tag === "STUDENT") {
+      } else if (student) {
         await tx.student.updateMany({
           where: { mits_uid },
           data: {
@@ -1452,12 +1590,29 @@ export async function bulkImportUsersService(payload: {
       return foundKey ? row[foundKey] : undefined;
     };
 
+    // Helper for fuzzy string matching (ignore spaces, hyphens, underscores)
+    const fuzzyMatch = (a: string, b: string) => {
+      const normalize = (s: string) => String(s).toLowerCase().replace(/[\s\-_]/g, '');
+      return normalize(a) === normalize(b);
+    };
+
     await prisma.$transaction(async (tx) => {
       for (const data of payload.users) {
         const mits_uid = getVal(data, "mits_uid");
         const name = getVal(data, "name");
         const email = getVal(data, "email");
-        const profileData = data;
+
+        // Extracting profile fields using getVal for robustness
+        const batchVal = getVal(data, "batch");
+        const batchIdVal = getVal(data, "batch_id");
+        const classVal = getVal(data, "class");
+        const classIdVal = getVal(data, "class_id");
+        const deptVal = getVal(data, "department") || getVal(data, "dept_name");
+        const deptIdVal = getVal(data, "department_id") || getVal(data, "dept_id");
+        const gender = getVal(data, "gender");
+        const hosteller = getVal(data, "hosteller");
+        const phone = getVal(data, "phone");
+        const roleTagVal = getVal(data, "role_tag") || getVal(data, "club_role_tag");
 
         // Skip empty rows
         if (!mits_uid && !name && !email) {
@@ -1469,21 +1624,20 @@ export async function bulkImportUsersService(payload: {
 
         let user_type_tag = getVal(data, "user_type_tag") || payload.defaultUserType;
 
-        const type = userTypes.find(t => t.user_type_tag === user_type_tag.toUpperCase());
+        const type = userTypes.find(t => t.user_type_tag === user_type_tag?.toUpperCase());
         if (!type) throw new Error(`Error at line ${rowNum}: Invalid user type: ${user_type_tag}`);
 
         const normalizedType = user_type_tag.toUpperCase();
 
-
         // 3. Create/Update Profile (Student or Faculty/Admin)
         if (normalizedType === "STUDENT") {
-          const batchInput = profileData.batch_id || profileData.batch;
-          const classInput = profileData.class_id || profileData.class;
+          const batchInput = batchIdVal || batchVal;
+          const classInput = classIdVal || classVal;
 
           // Resolve Batch
           const batch = allBatches.find(b =>
             b.batch_id === Number(batchInput) ||
-            b.batch.toLowerCase().trim() === String(batchInput).toLowerCase().trim()
+            fuzzyMatch(b.batch, String(batchInput))
           );
           if (!batch) throw new Error(`Error at line ${rowNum}: Batch "${batchInput}" not found.`);
           const batch_id = batch.batch_id;
@@ -1492,7 +1646,7 @@ export async function bulkImportUsersService(payload: {
           const cls = allClasses.find(c =>
             c.batch_id === batch_id && (
               c.class_id === Number(classInput) ||
-              c.class.toLowerCase().trim() === String(classInput).toLowerCase().trim()
+              fuzzyMatch(c.class, String(classInput))
             )
           );
           if (!cls) throw new Error(`Error at line ${rowNum}: Class "${classInput}" not found for batch "${batch.batch}".`);
@@ -1504,25 +1658,25 @@ export async function bulkImportUsersService(payload: {
               name,
               batch_id,
               class_id,
-              hosteller: String(profileData.hosteller).toLowerCase() === 'true',
-              gender: profileData.gender,
-              phone: profileData.phone,
+              hosteller: String(hosteller).toLowerCase() === 'true',
+              gender: gender,
+              phone: phone,
             },
             create: {
               mits_uid,
               name,
               batch_id,
               class_id,
-              hosteller: String(profileData.hosteller).toLowerCase() === 'true',
-              gender: profileData.gender,
-              phone: profileData.phone,
+              hosteller: String(hosteller).toLowerCase() === 'true',
+              gender: gender,
+              phone: phone,
             },
           });
         } else if (normalizedType === "FACULTY" || normalizedType === "ADMIN") {
-          const deptInput = profileData.department_id || profileData.department;
+          const deptInput = deptIdVal || deptVal;
           const dept = allDepartments.find(d =>
             d.dept_id === Number(deptInput) ||
-            d.dept_name.toLowerCase().trim() === String(deptInput).toLowerCase().trim()
+            fuzzyMatch(d.dept_name, String(deptInput))
           );
 
           if (!dept) throw new Error(`Error at line ${rowNum}: Department "${deptInput}" not found.`);
@@ -1545,8 +1699,8 @@ export async function bulkImportUsersService(payload: {
         }
 
         // 4. Handle Global Role Mapping
-        if (normalizedType !== "FACULTY" && normalizedType !== "ADMIN" && (profileData.role_tag || profileData.club_role_tag)) {
-          const desiredTag = (profileData.role_tag || profileData.club_role_tag).toUpperCase();
+        if (normalizedType !== "FACULTY" && normalizedType !== "ADMIN" && roleTagVal) {
+          const desiredTag = String(roleTagVal).toUpperCase();
           const role = roles.find(r => r.role_tag === desiredTag);
           if (role) {
             const maxId = await tx.roleMapping.aggregate({ _max: { role_mapping_id: true } });
@@ -1695,9 +1849,9 @@ export async function getDepartmentFacultyRoles(dept_id: number): Promise<Result
 }
 
 export async function assignDepartmentRole(payload: {
-  dept_id: number,
-  mits_uid: string,
-  role_tag: string
+  dept_id: number;
+  mits_uid: string;
+  role_tag: string;
 }): Promise<Result> {
   try {
     const { dept_id, mits_uid, role_tag } = payload;
@@ -1705,49 +1859,107 @@ export async function assignDepartmentRole(payload: {
     // 1. Find the role_id for the tag (case-insensitive)
     const role = await prisma.roles.findFirst({
       where: {
-        role_tag: { equals: role_tag, mode: 'insensitive' }
-      }
+        role_tag: { equals: role_tag, mode: "insensitive" },
+      },
     });
 
     if (!role) {
       return { success: false, statusCode: 404, message: `Role ${role_tag} not found` };
     }
 
-    // 2. REPLACEMENT LOGIC: Deactivate anyone else in THIS department holding THIS role
-    // This allows "Edit/Replace" by simply assigning a new person
-    await prisma.departmentFaculty.updateMany({
-      where: {
-        dept_id: dept_id,
-        role_id: role.role_id,
-        is_active: true
-      },
-      data: {
-        is_active: false,
-        deleted_at: new Date()
-      }
-    });
+    await prisma.$transaction(async (tx) => {
+      // 2. REPLACEMENT LOGIC: Deactivate anyone else in THIS department holding THIS role
+      const previousHolders = await tx.departmentFaculty.findMany({
+        where: {
+          dept_id: dept_id,
+          role_id: role.role_id,
+          is_active: true,
+        },
+      });
 
-    // 3. Upsert the department faculty record for the new person
-    await prisma.departmentFaculty.upsert({
-      where: { mits_uid: mits_uid },
-      create: {
-        mits_uid: mits_uid,
-        dept_id: dept_id,
-        role_id: role.role_id,
-        is_active: true
-      },
-      update: {
-        dept_id: dept_id,
-        role_id: role.role_id,
-        is_active: true,
-        deleted_at: null
+      for (const holder of previousHolders) {
+        await tx.departmentFaculty.update({
+          where: { mits_uid: holder.mits_uid },
+          data: {
+            is_active: false,
+            deleted_at: new Date(),
+          },
+        });
+
+        // Check if this holder has the SAME role in any OTHER department
+        const otherDeptRoles = await tx.departmentFaculty.findFirst({
+          where: {
+            mits_uid: holder.mits_uid,
+            role_id: role.role_id,
+            is_active: true,
+            NOT: { dept_id: dept_id },
+          },
+        });
+
+        if (!otherDeptRoles) {
+          // No other department roles, deactivate in RoleMapping
+          await tx.roleMapping.updateMany({
+            where: {
+              mits_uid: holder.mits_uid,
+              role_id: role.role_id,
+              is_active: true,
+            },
+            data: { is_active: false },
+          });
+        }
+      }
+
+      // 3. Upsert the department faculty record for the new person
+      await tx.departmentFaculty.upsert({
+        where: { mits_uid: mits_uid },
+        create: {
+          mits_uid: mits_uid,
+          dept_id: dept_id,
+          role_id: role.role_id,
+          is_active: true,
+        },
+        update: {
+          dept_id: dept_id,
+          role_id: role.role_id,
+          is_active: true,
+          deleted_at: null,
+        },
+      });
+
+      // 4. Update/Create RoleMapping for the new person
+      const existingMapping = await tx.roleMapping.findFirst({
+        where: {
+          mits_uid: mits_uid,
+          role_id: role.role_id,
+        },
+      });
+
+      if (existingMapping) {
+        await tx.roleMapping.update({
+          where: { role_mapping_id: existingMapping.role_mapping_id },
+          data: { is_active: true },
+        });
+      } else {
+        const maxId = await tx.roleMapping.aggregate({
+          _max: { role_mapping_id: true },
+        });
+        const newId = (maxId._max.role_mapping_id || 0) + 1;
+
+        await tx.roleMapping.create({
+          data: {
+            role_mapping_id: newId,
+            role_id: role.role_id,
+            mits_uid: mits_uid,
+            is_active: true,
+          },
+        });
       }
     });
 
     return {
       success: true,
       statusCode: 200,
-      message: "Department role assigned successfully"
+      message: "Department role assigned successfully",
     };
   } catch (error) {
     console.error("assignDepartmentRole error:", error);
@@ -1756,16 +1968,51 @@ export async function assignDepartmentRole(payload: {
 }
 
 export async function removeDepartmentRole(payload: {
-  mits_uid: string
+  mits_uid: string;
 }): Promise<Result> {
   try {
-    await prisma.departmentFaculty.update({
-      where: { mits_uid: payload.mits_uid },
-      data: {
-        is_active: false,
-        deleted_at: new Date()
+    const { mits_uid } = payload;
+
+    await prisma.$transaction(async (tx) => {
+      // 1. Get the current role of the user in the department
+      const currentRole = await tx.departmentFaculty.findUnique({
+        where: { mits_uid },
+      });
+
+      if (currentRole && currentRole.is_active) {
+        // 2. Deactivate in departmentFaculty
+        await tx.departmentFaculty.update({
+          where: { mits_uid },
+          data: {
+            is_active: false,
+            deleted_at: new Date(),
+          },
+        });
+
+        // 3. Check if this person has the SAME role in any OTHER department
+        const otherDeptRoles = await tx.departmentFaculty.findFirst({
+          where: {
+            mits_uid: mits_uid,
+            role_id: currentRole.role_id,
+            is_active: true,
+            NOT: { dept_id: currentRole.dept_id },
+          },
+        });
+
+        if (currentRole.role_id !== null && !otherDeptRoles) {
+          // No other department roles, deactivate in RoleMapping
+          await tx.roleMapping.updateMany({
+            where: {
+              mits_uid: mits_uid,
+              role_id: currentRole.role_id,
+              is_active: true,
+            },
+            data: { is_active: false },
+          });
+        }
       }
     });
+
     return { success: true, statusCode: 200, message: "Role removed successfully" };
   } catch (error) {
     console.error("removeDepartmentRole error:", error);
@@ -1901,9 +2148,25 @@ export async function bulkImportClubsService(payload: {
     }
 
     const departments = await prisma.departments.findMany();
+    const students = await prisma.student.findMany({ where: { is_active: true } });
+    const faculty = await prisma.faculty.findMany({ where: { is_active: true } });
+    const userAccounts = await prisma.userAccount.findMany({ where: { is_active: true } });
+    const existingMappings = await prisma.roleMapping.findMany({ where: { is_active: true } });
+
+    // Maps for fast O(1) lookup
+    const accountByUidMap = new Map(userAccounts.map(a => [a.mits_uid.toLowerCase(), a.mits_uid]));
+
+    // Name -> UID maps (multiple users might have same name, but here we take first found)
+    const studentByNameMap = new Map(students.map(s => [s.name.toLowerCase().trim(), s.mits_uid]));
+    const facultyByNameMap = new Map(faculty.map(f => [f.name.toLowerCase().trim(), f.mits_uid]));
+    const studentByUidMap = new Map(students.map(s => [s.mits_uid.toLowerCase(), s.mits_uid]));
+    const facultyByUidMap = new Map(faculty.map(f => [f.mits_uid.toLowerCase(), f.mits_uid]));
+
+    // Existing Mapping lookup: UID_RoleID -> MappingID
+    const mappingMap = new Map(existingMappings.map(m => [`${m.mits_uid.toLowerCase()}_${m.role_id}`, m.role_mapping_id]));
 
     await prisma.$transaction(async (tx) => {
-      // Manual ID management
+      // Manual ID management for creations
       const maxClub = await tx.clubs.aggregate({ _max: { club_id: true } });
       let nextClubId = (maxClub._max.club_id || 0) + 1;
 
@@ -1913,40 +2176,23 @@ export async function bulkImportClubsService(payload: {
       const maxRoleMapping = await tx.roleMapping.aggregate({ _max: { role_mapping_id: true } });
       let nextRoleMappingId = (maxRoleMapping._max.role_mapping_id || 0) + 1;
 
-      // Helper to resolve name to UID within the transaction
-      const resolveUserUid = async (input: string | undefined): Promise<string | undefined> => {
+      // Optimised UID resolution using maps
+      const resolveUserUid = (input: string | undefined): string | undefined => {
         if (!input) return undefined;
-        const normalizedInput = input.trim();
+        const normalized = input.trim().toLowerCase();
 
-        // 1. Check if it's already a mits_uid - Case Insensitive
-        const user = await tx.userAccount.findFirst({
-          where: { mits_uid: { equals: normalizedInput, mode: 'insensitive' } }
-        });
-        if (user) return user.mits_uid;
+        return accountByUidMap.get(normalized) ||
+          studentByUidMap.get(normalized) ||
+          facultyByUidMap.get(normalized) ||
+          facultyByNameMap.get(normalized) ||
+          studentByNameMap.get(normalized) ||
+          input.trim(); // Fallback if no match found in system
+      };
 
-        // 2. Search in Student by mits_uid or name
-        const student = await tx.student.findFirst({
-          where: {
-            OR: [
-              { mits_uid: { equals: normalizedInput, mode: 'insensitive' } },
-              { name: { contains: normalizedInput, mode: 'insensitive' } }
-            ]
-          }
-        });
-        if (student) return student.mits_uid;
-
-        // 3. Search in Faculty by mits_uid or name
-        const faculty = await tx.faculty.findFirst({
-          where: {
-            OR: [
-              { mits_uid: { equals: normalizedInput, mode: 'insensitive' } },
-              { name: { contains: normalizedInput, mode: 'insensitive' } }
-            ]
-          }
-        });
-        if (faculty) return faculty.mits_uid;
-
-        return normalizedInput; // Fallback
+      // Helper for fuzzy string matching (ignore spaces, hyphens, underscores)
+      const fuzzyMatch = (a: string, b: string) => {
+        const normalize = (s: string) => String(s).toLowerCase().replace(/[\s\-_]/g, '');
+        return normalize(a) === normalize(b);
       };
 
       // Helper to get value by flexible case-insensitive key
@@ -1976,22 +2222,22 @@ export async function bulkImportClubsService(payload: {
         if (!club_name) throw new Error(`Error at line ${rowNum}: Club name is required.`);
 
         const dept = departments.find(d =>
-          d.dept_name.toLowerCase() === club_department?.toString().toLowerCase() ||
-          d.dept_id.toString() === club_department?.toString()
+          fuzzyMatch(d.dept_name, String(club_department)) ||
+          d.dept_id.toString() === String(club_department)
         );
         const dept_id = dept ? dept.dept_id : null;
 
-        const leadUid = await resolveUserUid(club_lead_input);
-        const coordUid = await resolveUserUid(club_coordinator_input);
+        const leadUid = resolveUserUid(club_lead_input);
+        const coordUid = resolveUserUid(club_coordinator_input);
 
         // 1. Create/Retrieve Role Mappings for Coordinator (Faculty)
         let coordMappingId: number | null = null;
         if (coordUid) {
-          const existingCoord = await tx.roleMapping.findFirst({
-            where: { mits_uid: coordUid, role_id: coordRole.role_id, is_active: true }
-          });
-          if (existingCoord) {
-            coordMappingId = existingCoord.role_mapping_id;
+          const mappingKey = `${coordUid.toLowerCase()}_${coordRole.role_id}`;
+          const existingMappingId = mappingMap.get(mappingKey);
+
+          if (existingMappingId) {
+            coordMappingId = existingMappingId;
           } else {
             const newCoord = await tx.roleMapping.create({
               data: {
@@ -2002,17 +2248,19 @@ export async function bulkImportClubsService(payload: {
               }
             });
             coordMappingId = newCoord.role_mapping_id;
+            // Update map to prevent duplicate creates if same person is coordinator for multiple clubs in one CSV
+            mappingMap.set(mappingKey, coordMappingId);
           }
         }
 
         // 2. Create/Retrieve Role Mappings for Lead (Student)
         let leadMappingId: number | null = null;
         if (leadUid) {
-          const existingLead = await tx.roleMapping.findFirst({
-            where: { mits_uid: leadUid, role_id: leadRole.role_id, is_active: true }
-          });
-          if (existingLead) {
-            leadMappingId = existingLead.role_mapping_id;
+          const mappingKey = `${leadUid.toLowerCase()}_${leadRole.role_id}`;
+          const existingMappingId = mappingMap.get(mappingKey);
+
+          if (existingMappingId) {
+            leadMappingId = existingMappingId;
           } else {
             const newLead = await tx.roleMapping.create({
               data: {
@@ -2023,6 +2271,7 @@ export async function bulkImportClubsService(payload: {
               }
             });
             leadMappingId = newLead.role_mapping_id;
+            mappingMap.set(mappingKey, leadMappingId);
           }
         }
 
@@ -2052,7 +2301,7 @@ export async function bulkImportClubsService(payload: {
 
         rowNum++;
       }
-    });
+    }, { timeout: 30000 });
 
     return {
       success: true,
