@@ -39,7 +39,8 @@ import {
   assignClassRole,
   removeClassRole,
   updateRole,
-  deleteRole
+  deleteRole,
+  searchFaculty
 } from "../controllers/admin.controller.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { requireAuth } from "../middleware/requireAuth.js";
@@ -78,6 +79,7 @@ adminRouter.delete("/class/:id", deleteClass);
 
 // Users
 adminRouter.get("/users", getUsers);
+adminRouter.post("/search-faculty", searchFaculty);
 adminRouter.post("/user", createUser);
 adminRouter.put("/user/:id", updateUser);
 adminRouter.get("/roles", getRoles);

@@ -224,6 +224,17 @@ export async function getUsers(req: Request, res: Response) {
   return res.status(result.statusCode).json(result);
 }
 
+
+export async function searchFaculty(req: Request, res: Response) {
+  const { query, dept_id } = req.body;
+  const result = await AdminService.searchFacultyService(query as string, dept_id ? Number(dept_id) : undefined);
+  return res.status(result.statusCode).json({
+    success: result.success,
+    message: result.message,
+    data: result.data ?? null,
+  });
+}
+
 export async function updateUser(req: Request, res: Response) {
   const result = await AdminService.updateUserService({
     mits_uid: req.params.id,
