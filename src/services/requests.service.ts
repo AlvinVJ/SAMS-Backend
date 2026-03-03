@@ -56,6 +56,25 @@ export function getLastLevelRoleTag(procData: any): string {
   return lastLevel?.role || lastLevel?.roleIds?.[0] || "Principal";
 }
 
+// Helper: Get Club ID for a user (if they are coordinator or lead)
+export async function getClubIdForUser(mitsUid: string): Promise<number | null> {
+  // Check if coordinator
+  const clubAsCoord = await prisma.clubs.findFirst({
+    where: { RoleMapping: { mits_uid: mitsUid, is_active: true }, is_active: true },
+    select: { club_id: true }
+  });
+  if (clubAsCoord) return clubAsCoord.club_id;
+
+  // Check if lead/admin
+  const clubAsAdmin = await prisma.clubAdmin.findFirst({
+    where: { RoleMapping: { mits_uid: mitsUid, is_active: true }, is_active: true },
+    select: { club_id: true }
+  });
+  if (clubAsAdmin) return clubAsAdmin.club_id;
+
+  return null;
+}
+
 // Helper: Resolve Approvers
 export async function resolveApproversForRole(roleTag: string, requesterUid: string, clubId?: string | number): Promise<string[]> {
   const normalizedTag = roleTag.toLowerCase().trim();
@@ -63,28 +82,35 @@ export async function resolveApproversForRole(roleTag: string, requesterUid: str
   const normalizedTagSpaced = normalizedTag.replaceAll('_', ' ');
 
   // 0. CLUB SPECIFIC ROLES (with Context)
-  if ((normalizedTagUnderscored === "club_coordinator" || normalizedTagUnderscored === "club_lead") && clubId) {
-    const club = await prisma.clubs.findUnique({
-      where: { club_id: Number(clubId) },
-      include: {
-        RoleMapping: true, // Coordinator
-        ClubAdmin: {
-          include: { RoleMapping: true } // Leads
-        }
-      }
-    });
+  if ((normalizedTagUnderscored === "club_coordinator" || normalizedTagUnderscored === "club_lead")) {
+    // If clubId is missing, try to resolve from requester context
+    let effectiveClubId = clubId;
+    if (!effectiveClubId) {
+      effectiveClubId = await getClubIdForUser(requesterUid) || undefined;
+    }
 
-    if (club) {
-      if (normalizedTagUnderscored === "club_coordinator" && club.RoleMapping?.mits_uid) {
-        return [club.RoleMapping.mits_uid];
-      }
-      if (normalizedTagUnderscored === "club_lead") {
-        const leads = club.ClubAdmin.map(ca => ca.RoleMapping?.mits_uid).filter(Boolean) as string[];
-        if (leads.length > 0) return leads;
+    if (effectiveClubId) {
+      const club = await prisma.clubs.findUnique({
+        where: { club_id: Number(effectiveClubId) },
+        include: {
+          RoleMapping: true, // Coordinator
+          ClubAdmin: {
+            include: { RoleMapping: true } // Leads
+          }
+        }
+      });
+
+      if (club) {
+        if (normalizedTagUnderscored === "club_coordinator" && club.RoleMapping?.mits_uid) {
+          return [club.RoleMapping.mits_uid];
+        }
+        if (normalizedTagUnderscored === "club_lead") {
+          const leads = club.ClubAdmin.map(ca => ca.RoleMapping?.mits_uid).filter(Boolean) as string[];
+          if (leads.length > 0) return leads;
+        }
       }
     }
   }
-
 
   // 1. CLASS ADVISOR
   if (normalizedTag === "class_advisor") {
