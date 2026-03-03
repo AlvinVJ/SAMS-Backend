@@ -38,6 +38,9 @@ export async function resolveRequestStatus(req: any, procData: any, currentLevel
   if (req.status === 3) return { text: "Withdrawn", color: "withdrawn" };
 
   const activeLevel = procData?.approvalLevels?.find((l: any) => l.level === currentLevel);
+  if (!activeLevel && !Number.isInteger(currentLevel)) {
+    return { text: "Pending Ad-hoc Approval", color: "warning" };
+  }
   const roleName = (activeLevel?.role || activeLevel?.roleIds?.[0] || "Approver").replaceAll('_', ' ').toUpperCase();
   return { text: `Pending ${roleName}`, color: "warning" };
 }
@@ -54,8 +57,34 @@ export function getLastLevelRoleTag(procData: any): string {
 }
 
 // Helper: Resolve Approvers
-async function resolveApproversForRole(roleTag: string, requesterUid: string): Promise<string[]> {
+export async function resolveApproversForRole(roleTag: string, requesterUid: string, clubId?: string | number): Promise<string[]> {
   const normalizedTag = roleTag.toLowerCase().trim();
+  const normalizedTagUnderscored = normalizedTag.replaceAll(' ', '_');
+  const normalizedTagSpaced = normalizedTag.replaceAll('_', ' ');
+
+  // 0. CLUB SPECIFIC ROLES (with Context)
+  if ((normalizedTagUnderscored === "club_coordinator" || normalizedTagUnderscored === "club_lead") && clubId) {
+    const club = await prisma.clubs.findUnique({
+      where: { club_id: Number(clubId) },
+      include: {
+        RoleMapping: true, // Coordinator
+        ClubAdmin: {
+          include: { RoleMapping: true } // Leads
+        }
+      }
+    });
+
+    if (club) {
+      if (normalizedTagUnderscored === "club_coordinator" && club.RoleMapping?.mits_uid) {
+        return [club.RoleMapping.mits_uid];
+      }
+      if (normalizedTagUnderscored === "club_lead") {
+        const leads = club.ClubAdmin.map(ca => ca.RoleMapping?.mits_uid).filter(Boolean) as string[];
+        if (leads.length > 0) return leads;
+      }
+    }
+  }
+
 
   // 1. CLASS ADVISOR
   if (normalizedTag === "class_advisor") {
@@ -111,13 +140,21 @@ async function resolveApproversForRole(roleTag: string, requesterUid: string): P
   }
 
   // 3. GENERIC ROLES
-  const role = await prisma.roles.findFirst({
-    where: { role_tag: { equals: normalizedTag, mode: 'insensitive' } },
+  const roles = await prisma.roles.findMany({
+    where: {
+      role_tag: {
+        in: [normalizedTag, normalizedTagUnderscored, normalizedTagSpaced],
+        mode: 'insensitive'
+      }
+    },
     select: { role_id: true },
   });
-  if (!role) return [];
+
+  if (roles.length === 0) return [];
+  const roleIds = roles.map(r => r.role_id);
+
   const mappings = await prisma.roleMapping.findMany({
-    where: { role_id: role.role_id, is_active: true, deleted_at: null },
+    where: { role_id: { in: roleIds }, is_active: true, deleted_at: null },
     select: { mits_uid: true },
   });
   return mappings.map(m => m.mits_uid);
@@ -314,10 +351,11 @@ export async function createRequest(payload: { body: any; user: any }): Promise<
     if (level1Def) {
       let level1Approvers: string[] = [];
       const roleTags = level1Def.roleIds || [level1Def.role];
+      const clubId = formData?.club_id || formData?.clubId || formData?.club;
 
       for (const tag of roleTags) {
         if (typeof tag === 'string') {
-          const uids = await resolveApproversForRole(tag, userAccount.mits_uid);
+          const uids = await resolveApproversForRole(tag, userAccount.mits_uid, clubId);
           level1Approvers.push(...uids);
         }
       }

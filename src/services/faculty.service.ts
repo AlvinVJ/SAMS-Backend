@@ -1,6 +1,6 @@
 import { prisma } from "../db/prisma.js";
 import { firestore } from "../config/firebase.js";
-import { enrichStudentListInFormData, getUserNameFromUid, getLastLevelRoleTag } from "./requests.service.js";
+import { enrichStudentListInFormData, getUserNameFromUid, getLastLevelRoleTag, resolveApproversForRole } from "./requests.service.js";
 import { processHostellerNotification } from "./hostel.service.js";
 import { processPlacementAttendance } from "./placement.service.js";
 
@@ -12,36 +12,6 @@ interface Result {
 }
 
 
-async function resolveApproversForRole(roleTag: string, requesterUid: string): Promise<string[]> {
-  const normalizedTag = roleTag.toLowerCase();
-  if (normalizedTag === "class_advisor") {
-    const student = await prisma.student.findUnique({
-      where: { mits_uid: requesterUid },
-      select: { class_id: true },
-    });
-    if (!student || !student.class_id) return [];
-    const advisors = await prisma.classFaculty.findMany({
-      where: {
-        class_id: student.class_id,
-        role_tag: { equals: "class_advisor", mode: 'insensitive' },
-        is_active: true,
-        deleted_at: null,
-      },
-      select: { mits_uid: true },
-    });
-    return advisors.map(a => a.mits_uid);
-  }
-  const role = await prisma.roles.findFirst({
-    where: { role_tag: { equals: normalizedTag, mode: 'insensitive' } },
-    select: { role_id: true },
-  });
-  if (!role) return [];
-  const mappings = await prisma.roleMapping.findMany({
-    where: { role_id: role.role_id, is_active: true, deleted_at: null },
-    select: { mits_uid: true },
-  });
-  return mappings.map(m => m.mits_uid);
-}
 
 
 export async function getRequestsToApproveService(payload: any) {
@@ -190,8 +160,20 @@ export async function approveRequestService(payload: any): Promise<Result> {
   try {
     const mits_uid = (payload.user.mits_uid as string);
     const normalizedFacultyUid = mits_uid.trim().toLowerCase();
-    const { requestId, role, comments } = payload.body;
+    const { requestId, role, comments, forwardTo, nextApproverUid } = payload.body;
     const normalizedRole = (role as string)?.trim().toLowerCase();
+
+    // Normalize forwarding UIDs
+    let uidsToForward: string[] = [];
+    if (forwardTo && Array.isArray(forwardTo)) {
+      uidsToForward = forwardTo.map(uid => uid.trim().toLowerCase()).filter(Boolean);
+    } else if (nextApproverUid) {
+      if (Array.isArray(nextApproverUid)) {
+        uidsToForward = nextApproverUid.map(uid => uid.trim().toLowerCase()).filter(Boolean);
+      } else {
+        uidsToForward = [nextApproverUid.trim().toLowerCase()];
+      }
+    }
 
     const requestRef = firestore.collection("requests").doc(requestId);
     const snap = await requestRef.get();
@@ -231,95 +213,122 @@ export async function approveRequestService(payload: any): Promise<Result> {
     }).catch((e: any) => console.error("ToApprove delete error (likely already gone):", e));
 
     const approvalsDone = levelBlock.decisions.filter((d: any) => d.decision === "APPROVED").length;
-    if (approvalsDone >= levelBlock.required_approvals) {
+    const isForwarded = uidsToForward.length > 0;
+
+    if (approvalsDone >= levelBlock.required_approvals || isForwarded) {
       levelBlock.net_status = "APPROVED";
 
-      // 2. Clear remaining action items for this request at the current level (if any)
+      // 2. Clear remaining action items for this request at the current level
       await prisma.toApprove.deleteMany({
         where: { req_id: requestId, approvalLevel: currentLevel }
       });
 
       const procSnap = await firestore.collection("procedures").doc(procId).get();
       const procedure = procSnap.data();
-      const nextLevelNum = currentLevel + 1;
-      const nextLevelDef = procedure?.approvalLevels?.find((l: any) => l.level === nextLevelNum);
 
-      if (nextLevelDef) {
-        data.current_level = nextLevelNum;
-        let nextApprovers: string[] = [];
-        for (const roleTag of (nextLevelDef.roleIds || [nextLevelDef.role])) {
-          const uids = await resolveApproversForRole(roleTag, studentId);
-          nextApprovers.push(...uids);
-        }
-        nextApprovers = [...new Set(nextApprovers)];
+      // Handle Ad-hoc Forwarding vs Standard Next Level
+      if (isForwarded) {
+        const adHocLevel = Number((currentLevel + 0.01).toFixed(2));
+        data.current_level = adHocLevel;
+
         approvalProgress.push({
-          level: nextLevelNum,
+          level: adHocLevel,
           net_status: "PENDING",
-          required_approvals: nextLevelDef.allMustApprove ? nextApprovers.length : (nextLevelDef.minApprovals || 1),
-          decisions: nextApprovers.map(uid => ({ mits_uid: uid }))
+          required_approvals: uidsToForward.length,
+          decisions: uidsToForward.map((uid: string) => ({ mits_uid: uid }))
         });
 
-        // 3. Populate ToApprove table for next level approvers
-        const nextLevelRole = (nextLevelDef.roleIds || [nextLevelDef.role])?.[0] || "Approver";
-        const toApproveData = nextApprovers.map(uid => ({
+        const adHocToApprove = uidsToForward.map((uid: string) => ({
           req_id: requestId,
           approverUID: uid,
-          approvalLevel: nextLevelNum,
-          approvalType: nextLevelRole
+          approvalLevel: adHocLevel,
+          approvalType: "General"
         }));
 
-        if (toApproveData.length > 0) {
-          await prisma.toApprove.createMany({
-            data: toApproveData,
-            skipDuplicates: true
+        await prisma.toApprove.createMany({ data: adHocToApprove, skipDuplicates: true });
+      } else {
+        // Find FIRST level in definition that is > currentLevel
+        const nextLevelDef = (procedure?.approvalLevels || [])
+          .filter((l: any) => l.level > currentLevel)
+          .sort((a: any, b: any) => a.level - b.level)[0];
+
+        if (nextLevelDef) {
+          const nextLevelNum = nextLevelDef.level;
+          data.current_level = nextLevelNum;
+          let nextApprovers: string[] = [];
+          const formData = data.formData || {};
+          const clubId = formData.club_id || formData.clubId || formData.club;
+
+          for (const roleTag of (nextLevelDef.roleIds || [nextLevelDef.role])) {
+            const uids = await resolveApproversForRole(roleTag, studentId, clubId);
+            nextApprovers.push(...uids);
+          }
+          nextApprovers = [...new Set(nextApprovers)];
+          approvalProgress.push({
+            level: nextLevelNum,
+            net_status: "PENDING",
+            required_approvals: nextLevelDef.allMustApprove ? nextApprovers.length : (nextLevelDef.minApprovals || 1),
+            decisions: nextApprovers.map(uid => ({ mits_uid: uid }))
           });
 
-          // Sync Analytics pending for next level
-          try {
-            const roleRow = await prisma.roles.findFirst({
-              where: { role_tag: { equals: nextLevelRole, mode: 'insensitive' } }
+          // 3. Populate ToApprove table for next level approvers
+          const nextLevelRole = (nextLevelDef.roleIds || [nextLevelDef.role])?.[0] || "Approver";
+          const toApproveData = nextApprovers.map(uid => ({
+            req_id: requestId,
+            approverUID: uid,
+            approvalLevel: nextLevelNum,
+            approvalType: nextLevelRole
+          }));
+
+          if (toApproveData.length > 0) {
+            await prisma.toApprove.createMany({
+              data: toApproveData,
+              skipDuplicates: true
             });
-            if (roleRow) {
-              for (const uid of nextApprovers) {
-                await prisma.analytics.upsert({
-                  where: { mits_uid_role_id: { mits_uid: uid, role_id: roleRow.role_id } },
-                  create: { mits_uid: uid, role_id: roleRow.role_id, pending: 1, approved: 0, rejected: 0 },
-                  update: { pending: { increment: 1 } }
-                });
+
+            // Sync Analytics pending for next level
+            try {
+              const roleRow = await prisma.roles.findFirst({
+                where: { role_tag: { equals: nextLevelRole, mode: 'insensitive' } }
+              });
+              if (roleRow) {
+                for (const uid of nextApprovers) {
+                  await prisma.analytics.upsert({
+                    where: { mits_uid_role_id: { mits_uid: uid, role_id: roleRow.role_id } },
+                    create: { mits_uid: uid, role_id: roleRow.role_id, pending: 1, approved: 0, rejected: 0 },
+                    update: { pending: { increment: 1 } }
+                  });
+                }
               }
+            } catch (e) {
+              console.error("Failed to update next level Analytics pending counts:", e);
             }
-          } catch (e) {
-            console.error("Failed to update next level Analytics pending counts:", e);
           }
-        }
-      } else {
-        data.status = "APPROVED";
-        await prisma.requests.update({ where: { req_id: requestId }, data: { status: 1 } });
+        } else {
+          data.status = "APPROVED";
+          await prisma.requests.update({ where: { req_id: requestId }, data: { status: 1 } });
 
-        // Trigger Standardized System Hook (END) after full approval
-        if (procedure?.system_hook && procedure?.hook_trigger === "END") {
-          const formData = data.formData || {};
-          const hookData = formData.hook_data || formData.student_list || formData.uids || [];
-          console.log(`[SYSTEM_HOOK_END] Hook data to process:`, JSON.stringify(hookData).substring(0, 500), hookData.length > 0 ? "..." : "");
-
-          console.log(`[SYSTEM_HOOK_END] Triggering ${procedure.system_hook} for approved request ${requestId}`);
-
-          if (procedure.system_hook === "OVERNIGHT_HOSTEL") {
-            await processHostellerNotification({
-              procedureId: procId,
-              hookData: Array.isArray(hookData) ? hookData : [],
-              coordinatorUid: studentId,
-              eventName: formData.event_name || formData.title || "Hostel Notification",
-              date: formData.event_date || formData.date || new Date().toISOString().split('T')[0],
-            });
-          } else if (procedure.system_hook === "PLACEMENT_BULK") {
-            await processPlacementAttendance({
-              procedureId: procId,
-              hookData: Array.isArray(hookData) ? hookData : [],
-              coordinatorUid: studentId,
-              eventName: formData.event_name || formData.title || "Placement Event Approved",
-              date: formData.test_date || formData.date || new Date().toISOString().split('T')[0],
-            });
+          // Trigger Standardized System Hook (END) after full approval
+          if (procedure?.system_hook && procedure?.hook_trigger === "END") {
+            const formData = data.formData || {};
+            const hookData = formData.hook_data || formData.student_list || formData.uids || [];
+            if (procedure.system_hook === "OVERNIGHT_HOSTEL") {
+              await processHostellerNotification({
+                procedureId: procId,
+                hookData: Array.isArray(hookData) ? hookData : [],
+                coordinatorUid: studentId,
+                eventName: formData.event_name || formData.title || "Hostel Notification",
+                date: formData.event_date || formData.date || new Date().toISOString().split('T')[0],
+              });
+            } else if (procedure.system_hook === "PLACEMENT_BULK") {
+              await processPlacementAttendance({
+                procedureId: procId,
+                hookData: Array.isArray(hookData) ? hookData : [],
+                coordinatorUid: studentId,
+                eventName: formData.event_name || formData.title || "Placement Event Approved",
+                date: formData.test_date || formData.date || new Date().toISOString().split('T')[0],
+              });
+            }
           }
         }
       }
