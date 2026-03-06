@@ -2,6 +2,9 @@ import { prisma } from "../db/prisma.js";
 import admin, { firestore } from "../config/firebase.js";
 import { publishRequestWithdrawn, publishApprovalAlert } from "../queues/producers/importantProducer.js";
 import { supabase } from "../config/supabase.js";
+import { processPlacementAttendance } from "./placement.service.js";
+import { processHostellerNotification } from "./hostel.service.js";
+import { publishApprovalAlert } from "../queues/producers/importantProducer.js";
 
 interface Result {
   success: boolean;
@@ -35,6 +38,9 @@ export async function resolveRequestStatus(req: any, procData: any, currentLevel
   if (req.status === 3) return { text: "Withdrawn", color: "withdrawn" };
 
   const activeLevel = procData?.approvalLevels?.find((l: any) => l.level === currentLevel);
+  if (!activeLevel && !Number.isInteger(currentLevel)) {
+    return { text: "Pending Ad-hoc Approval", color: "warning" };
+  }
   const roleName = (activeLevel?.role || activeLevel?.roleIds?.[0] || "Approver").replaceAll('_', ' ').toUpperCase();
   return { text: `Pending ${roleName}`, color: "warning" };
 }
@@ -50,9 +56,63 @@ export function getLastLevelRoleTag(procData: any): string {
   return lastLevel?.role || lastLevel?.roleIds?.[0] || "Principal";
 }
 
+// Helper: Get Club ID for a user (if they are coordinator or lead)
+export async function getClubIdForUser(mitsUid: string): Promise<number | null> {
+  // Check if coordinator
+  const clubAsCoord = await prisma.clubs.findFirst({
+    where: { RoleMapping: { mits_uid: mitsUid, is_active: true }, is_active: true },
+    select: { club_id: true }
+  });
+  if (clubAsCoord) return clubAsCoord.club_id;
+
+  // Check if lead/admin
+  const clubAsAdmin = await prisma.clubAdmin.findFirst({
+    where: { RoleMapping: { mits_uid: mitsUid, is_active: true }, is_active: true },
+    select: { club_id: true }
+  });
+  if (clubAsAdmin) return clubAsAdmin.club_id;
+
+  return null;
+}
+
 // Helper: Resolve Approvers
-async function resolveApproversForRole(roleTag: string, requesterUid: string): Promise<string[]> {
-  const normalizedTag = roleTag.toLowerCase();
+export async function resolveApproversForRole(roleTag: string, requesterUid: string, clubId?: string | number): Promise<string[]> {
+  const normalizedTag = roleTag.toLowerCase().trim();
+  const normalizedTagUnderscored = normalizedTag.replaceAll(' ', '_');
+  const normalizedTagSpaced = normalizedTag.replaceAll('_', ' ');
+
+  // 0. CLUB SPECIFIC ROLES (with Context)
+  if ((normalizedTagUnderscored === "club_coordinator" || normalizedTagUnderscored === "club_lead")) {
+    // If clubId is missing, try to resolve from requester context
+    let effectiveClubId = clubId;
+    if (!effectiveClubId) {
+      effectiveClubId = await getClubIdForUser(requesterUid) || undefined;
+    }
+
+    if (effectiveClubId) {
+      const club = await prisma.clubs.findUnique({
+        where: { club_id: Number(effectiveClubId) },
+        include: {
+          RoleMapping: true, // Coordinator
+          ClubAdmin: {
+            include: { RoleMapping: true } // Leads
+          }
+        }
+      });
+
+      if (club) {
+        if (normalizedTagUnderscored === "club_coordinator" && club.RoleMapping?.mits_uid) {
+          return [club.RoleMapping.mits_uid];
+        }
+        if (normalizedTagUnderscored === "club_lead") {
+          const leads = club.ClubAdmin.map(ca => ca.RoleMapping?.mits_uid).filter(Boolean) as string[];
+          if (leads.length > 0) return leads;
+        }
+      }
+    }
+  }
+
+  // 1. CLASS ADVISOR
   if (normalizedTag === "class_advisor") {
     const student = await prisma.student.findUnique({
       where: { mits_uid: requesterUid },
@@ -70,13 +130,57 @@ async function resolveApproversForRole(roleTag: string, requesterUid: string): P
     });
     return advisors.map(a => a.mits_uid);
   }
-  const role = await prisma.roles.findFirst({
-    where: { role_tag: { equals: normalizedTag, mode: 'insensitive' } },
+
+  // 2. HOD / ASSISTANT HOD
+  if (normalizedTag === "hod" || normalizedTag === "assistant_hod") {
+    let deptId: number | null = null;
+    const student = await prisma.student.findUnique({
+      where: { mits_uid: requesterUid },
+      include: { Classes: true }
+    });
+    if (student && student.Classes) {
+      deptId = student.Classes.dept_id;
+    } else {
+      const faculty = await prisma.faculty.findUnique({
+        where: { mits_uid: requesterUid },
+        select: { department_id: true }
+      });
+      if (faculty) deptId = faculty.department_id;
+    }
+    if (!deptId) return [];
+
+    const approvers = await prisma.departmentFaculty.findMany({
+      where: {
+        dept_id: deptId,
+        is_active: true,
+        deleted_at: null,
+        Roles: {
+          role_tag: normalizedTag === 'assistant_hod'
+            ? { in: ['ASSISTANT_HOD', 'ASST_HOD'], mode: 'insensitive' }
+            : { equals: normalizedTag, mode: 'insensitive' }
+        }
+      },
+      select: { mits_uid: true }
+    });
+    return approvers.map(a => a.mits_uid);
+  }
+
+  // 3. GENERIC ROLES
+  const roles = await prisma.roles.findMany({
+    where: {
+      role_tag: {
+        in: [normalizedTag, normalizedTagUnderscored, normalizedTagSpaced],
+        mode: 'insensitive'
+      }
+    },
     select: { role_id: true },
   });
-  if (!role) return [];
+
+  if (roles.length === 0) return [];
+  const roleIds = roles.map(r => r.role_id);
+
   const mappings = await prisma.roleMapping.findMany({
-    where: { role_id: role.role_id, is_active: true, deleted_at: null },
+    where: { role_id: { in: roleIds }, is_active: true, deleted_at: null },
     select: { mits_uid: true },
   });
   return mappings.map(m => m.mits_uid);
@@ -177,18 +281,91 @@ export async function createRequest(payload: { body: any; user: any }): Promise<
   try {
     const { procedureId, formData } = payload.body;
     const { uid, email, name: tokenName } = payload.user;
-    const procedure = await prisma.procedures.findUnique({ where: { proc_id: procedureId } });
-    if (!procedure || !procedure.is_active) {
-      return { success: false, statusCode: 404, message: "Procedure not found" };
-    }
-    const userAccount = await prisma.userAccount.findUnique({ where: { auth_uid: uid } });
+
+    const userAccount = await prisma.userAccount.findUnique({
+      where: { auth_uid: uid },
+      include: { UserTypes: true }
+    });
     if (!userAccount) {
       return { success: false, statusCode: 404, message: "User account not linked" };
     }
-    const student = await prisma.student.findUnique({ where: { mits_uid: userAccount.mits_uid } });
-    const studentName = student?.name || tokenName || email || "Student";
+
+    const mits_uid = userAccount.mits_uid;
+
+    // 1. Accessibility Check
+    const visibleTypes = new Set<number>();
+    visibleTypes.add(userAccount.user_type);
+
+    const roleTagsSet = new Set<string>();
+    const globalRoles = await prisma.roleMapping.findMany({
+      where: { mits_uid: { equals: mits_uid, mode: 'insensitive' }, is_active: true },
+      include: { Roles: true }
+    });
+    globalRoles.forEach(r => roleTagsSet.add(r.Roles.role_tag));
+
+    const classRoles = await prisma.classFaculty.findMany({
+      where: { mits_uid: { equals: mits_uid, mode: 'insensitive' }, is_active: true },
+      select: { role_tag: true }
+    });
+    classRoles.forEach(r => roleTagsSet.add(r.role_tag));
+
+    const userTypes = await prisma.userTypes.findMany({ where: { is_active: true } });
+    const normalize = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const normRoleTags = Array.from(roleTagsSet).map(t => normalize(t));
+
+    userTypes.forEach(ut => {
+      if (normRoleTags.includes(normalize(ut.user_type_tag))) {
+        visibleTypes.add(ut.user_type_id);
+      }
+    });
+
+    const procedure = await prisma.procedures.findFirst({
+      where: {
+        proc_id: procedureId,
+        is_active: true,
+        ProcedureVisibility: {
+          some: {
+            user_type: { in: Array.from(visibleTypes) },
+          },
+        },
+      },
+    });
+
+    if (!procedure) {
+      return { success: false, statusCode: 403, message: "Procedure not accessible or found" };
+    }
+
+    const student = await prisma.student.findUnique({ where: { mits_uid } });
+    const faculty = !student ? await prisma.faculty.findUnique({ where: { mits_uid } }) : null;
+    const studentName = student?.name || faculty?.name || tokenName || email || "User";
+
     const procDoc = await firestore.collection("procedures").doc(procedureId).get();
-    let approvalLevelsDefinition = procDoc.exists ? (procDoc.data()?.approvalLevels || []) : [];
+    const procData = procDoc.data();
+    let approvalLevelsDefinition = procData?.approvalLevels || [];
+
+    // 2. SYSTEM HOOK INTERCEPTION
+    const hookData = formData.hook_data || formData.student_list || formData.uids || [];
+    if (procData?.system_hook === "PLACEMENT_BULK" && procData?.hook_trigger === "START") {
+      return await processPlacementAttendance({
+        procedureId,
+        hookData: Array.isArray(hookData) ? hookData : [],
+        coordinatorUid: mits_uid,
+        eventName: formData.company_name || formData.event_name || formData.title || "Placement Event",
+        date: formData.test_date || formData.date || new Date().toISOString().split('T')[0],
+        startTime: formData.start_time,
+        endTime: formData.end_time,
+      }) as Result;
+    }
+
+    if (procData?.system_hook === "OVERNIGHT_HOSTEL" && procData?.hook_trigger === "START") {
+      return await processHostellerNotification({
+        procedureId,
+        hookData: Array.isArray(hookData) ? hookData : [],
+        coordinatorUid: mits_uid,
+        eventName: formData.event_name || formData.title || "Hostel Notification",
+        date: formData.event_date || formData.date || new Date().toISOString().split('T')[0],
+      }) as Result;
+    }
 
     const requestId = generateId();
     const nowISO = new Date().toISOString();
@@ -200,10 +377,11 @@ export async function createRequest(payload: { body: any; user: any }): Promise<
     if (level1Def) {
       let level1Approvers: string[] = [];
       const roleTags = level1Def.roleIds || [level1Def.role];
+      const clubId = formData?.club_id || formData?.clubId || formData?.club;
 
       for (const tag of roleTags) {
         if (typeof tag === 'string') {
-          const uids = await resolveApproversForRole(tag, userAccount.mits_uid);
+          const uids = await resolveApproversForRole(tag, userAccount.mits_uid, clubId);
           level1Approvers.push(...uids);
         }
       }
