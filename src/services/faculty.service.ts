@@ -3,6 +3,7 @@ import { firestore } from "../config/firebase.js";
 import { enrichStudentListInFormData, getUserNameFromUid, getLastLevelRoleTag } from "./requests.service.js";
 import { processHostellerNotification } from "./hostel.service.js";
 import { processPlacementAttendance } from "./placement.service.js";
+import { publishApprovalUpdate, publishFinalApproval, publishRequestRejected } from "../queues/producers/importantProducer.js";
 
 interface Result {
   success: boolean;
@@ -292,9 +293,24 @@ export async function approveRequestService(payload: any): Promise<Result> {
             console.error("Failed to update next level Analytics pending counts:", e);
           }
         }
+
+        // 4. Trigger SQS Notification for Intermediate Approval (Non-blocking)
+        publishApprovalUpdate(
+          requestId,
+          [studentId],
+          normalizedFacultyUid,
+          nextLevelNum
+        ).catch((err) => {
+          console.error("Failed to enqueue approval update notification:", err);
+        });
+
       } else {
         data.status = "APPROVED";
         await prisma.requests.update({ where: { req_id: requestId }, data: { status: 1 } });
+
+        publishFinalApproval(requestId, [studentId]).catch((err) => {
+          console.error("Failed to enqueue final approval notification:", err);
+        });
 
         // Trigger Standardized System Hook (END) after full approval
         if (procedure?.system_hook && procedure?.hook_trigger === "END") {
@@ -403,6 +419,10 @@ export async function rejectRequestService(payload: any): Promise<Result> {
     await prisma.requests.update({
       where: { req_id: requestId },
       data: { status: 2 }
+    });
+
+    publishRequestRejected(requestId, [data.created_by || data.studentId || data.student_id], reason).catch((err: any) => {
+      console.error("Failed to enqueue rejection notification:", err);
     });
 
     await prisma.toApprove.deleteMany({

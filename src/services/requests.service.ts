@@ -1,6 +1,6 @@
 import { prisma } from "../db/prisma.js";
 import admin, { firestore } from "../config/firebase.js";
-import { publishRequestWithdrawn } from "../queues/producers/importantProducer.js";
+import { publishRequestWithdrawn, publishApprovalAlert } from "../queues/producers/importantProducer.js";
 import { supabase } from "../config/supabase.js";
 
 interface Result {
@@ -287,6 +287,15 @@ export async function createRequest(payload: { body: any; user: any }): Promise<
       timeline: [{ action: "SUBMITTED", by: studentName, role: "STUDENT", timestamp: nowISO }],
       approval_progress: approval_progress
     });
+
+    // 4. Trigger SQS Notification (Non-blocking)
+    const targetUserIds = toApproveData.map((t: any) => t.approverUID);
+    if (targetUserIds.length > 0) {
+      publishApprovalAlert(requestId, targetUserIds).catch((err) => {
+        console.error("Failed to enqueue approval alert notification:", err);
+      });
+    }
+
     return { success: true, statusCode: 201, message: "Request created", data: { requestId } };
   } catch (error: any) {
     console.error("createRequest error:", error);
@@ -535,11 +544,14 @@ export async function withdrawRequest(requestId: string, user: any): Promise<Res
       return { success: false, statusCode: 400, message: "Only pending requests can be withdrawn" };
     }
 
-    // 1. Get current approvers to decrement analytics
+    // 1. Fetch pending approvers BEFORE deleting (to send them notifications)
     const pendingApprovals = await prisma.toApprove.findMany({
-      where: { req_id: requestId }
+      where: { req_id: requestId },
+      select: { approverUID: true, approvalType: true }
     });
+    const approverIds = [...new Set(pendingApprovals.map((a: any) => a.approverUID))];
 
+    // 2. Decrement analytics for each pending approver
     for (const app of pendingApprovals) {
       try {
         if (app.approvalType) {
@@ -557,11 +569,6 @@ export async function withdrawRequest(requestId: string, user: any): Promise<Res
         console.error("Failed to decrement analytics during withdrawal:", e);
       }
     }
-
-    // 2. Delete action items
-    await prisma.toApprove.deleteMany({
-      where: { req_id: requestId }
-    });
 
     // 3. Update SQL status
     await prisma.requests.update({
@@ -598,12 +605,17 @@ export async function withdrawRequest(requestId: string, user: any): Promise<Res
       })
     });
 
-    // 5. Send notification to student
-    try {
-      await publishRequestWithdrawn(requestId, [userAccount.mits_uid]);
-    } catch (e) {
-      console.error("Failed to enqueue withdrawn notification:", e);
+    // 5. Notify pending approvers (non-blocking) — staff who had this in their queue
+    if (approverIds.length > 0) {
+      publishRequestWithdrawn(requestId, approverIds).catch((err) => {
+        console.error("Failed to enqueue withdrawal notification:", err);
+      });
     }
+
+    // 6. Delete action items from toApprove AFTER notifications are dispatched
+    await prisma.toApprove.deleteMany({
+      where: { req_id: requestId }
+    });
 
     return { success: true, statusCode: 200, message: "Request withdrawn successfully" };
   } catch (error: any) {

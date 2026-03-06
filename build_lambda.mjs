@@ -69,11 +69,11 @@ async function build() {
     execSync('find lambda_dist/node_modules -name "*.md" -type f -delete');
 
     console.log('Zipping deployment bundle...');
-    if (fs.existsSync('lambda-deploy-final5.zip')) {
-        fs.rmSync('lambda-deploy-final5.zip');
+    if (fs.existsSync('lambda-deploy-final7.zip')) {
+        fs.rmSync('lambda-deploy-final7.zip');
     }
-    execSync('cd lambda_dist && zip -rqq ../lambda-deploy-final5.zip .');
-    console.log('Done! Generated lambda-deploy-final5.zip');
+    execSync('cd lambda_dist && zip -rqq ../lambda-deploy-final7.zip .');
+    console.log('Done! Generated lambda-deploy-final7.zip');
 }
 
 build().catch(err => {
