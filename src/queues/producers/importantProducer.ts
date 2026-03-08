@@ -86,7 +86,7 @@ export async function publishRequestWithdrawn(
   await sendToSQS(SQS_QUEUES.IMPORTANT!, {
     type: NotificationTypes.REQUEST_WITHDRAWN,
     targetUserIds: studentUserIds,
-    message: `Your request #${requestId} has been successfully withdrawn.`,
+    message: `Request #${requestId} has been withdrawn by the student.`,
     requestId,
     timestamp: new Date().toISOString(),
   });

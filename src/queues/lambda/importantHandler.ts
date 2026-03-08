@@ -28,72 +28,84 @@ export const handler = async (event: any, context: any) => {
                 continue;
             }
 
-            // ===================================================
-            // STEP 1: Save to Firestore (Batched)
-            // ===================================================
-            const batch = firestore.batch();
-            const profilesRef = firestore.collection("profiles");
-
             for (const userId of userIds) {
-                // Generate a new document reference in the notifications subcollection
-                const docRef = profilesRef.doc(userId).collection("notifications").doc();
-                batch.set(docRef, {
-                    type: type,
-                    message: message,
-                    requestId: requestId ?? null,
-                    isRead: false,
-                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                });
-            }
+                try {
+                    // ===================================================
+                    // STEP 1: Save to Firestore per user
+                    // ===================================================
+                    const docRef = firestore.collection("profiles").doc(userId).collection("notifications").doc();
+                    await docRef.set({
+                        type: type,
+                        message: message,
+                        requestId: requestId ?? null,
+                        isRead: false,
+                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    });
 
-            await batch.commit();
+                    // ===================================================
+                    // STEP 2: FCM Push for this user
+                    // ===================================================
+                    const userTokens = await prisma.fCMTokens.findMany({
+                        where: { mits_uid: userId },
+                        select: { fcm_token: true },
+                    });
 
-            // ===================================================
-            // STEP 2: FCM Push (Chunked Multicast)
-            // ===================================================
-            const userTokens = await prisma.fCMTokens.findMany({
-                where: { mits_uid: { in: userIds } },
-                select: { fcm_token: true },
-            });
+                    if (userTokens.length > 0) {
+                        const rawTokens = userTokens.map((t) => t.fcm_token);
+                        const uniqueTokens = Array.from(new Set(rawTokens));
+                        console.log(`📋 Found ${uniqueTokens.length} unique tokens for user: ${userId}`);
 
-            if (userTokens.length > 0) {
-                const rawTokens = userTokens.map((t) => t.fcm_token);
-                const uniqueTokens = Array.from(new Set(rawTokens));
-                console.log(`📋 Found ${rawTokens.length} total tokens, ${uniqueTokens.length} unique tokens for users:`, userIds);
-                console.log(`🔑 Tokens being targeted:`, uniqueTokens);
+                        const pushMessage = {
+                            notification: {
+                                title: "Action Required" + (requestId ? ` (Req #${requestId})` : ""),
+                                body: message || "You have a new important update.",
+                            },
+                            data: {
+                                type: typeof type === 'string' ? type : String(type),
+                                url: requestId ? `/requests/${requestId}` : "/",
+                            },
+                            tokens: uniqueTokens,
+                        };
 
-                const tokens = uniqueTokens;
+                        try {
+                            const response = await fcm.sendEachForMulticast(pushMessage);
 
-                const baseMessage = {
-                    notification: {
-                        title: "Action Required" + (requestId ? ` (Req #${requestId})` : ""),
-                        body: message || "You have a new important update.",
-                    },
-                    data: {
-                        type: typeof type === 'string' ? type : String(type),
-                        url: requestId ? `/requests/${requestId}` : "/",
-                    },
-                };
+                            if (response.failureCount > 0) {
+                                const failedTokens: string[] = [];
 
-                const chunkSize = 500;
-                let successCount = 0;
-                let failureCount = 0;
+                                response.responses.forEach((resp, idx) => {
+                                    if (!resp.success && resp.error) {
+                                        const errCode = resp.error.code;
+                                        const failedToken = uniqueTokens[idx] as string;
+                                        if (errCode === 'messaging/registration-token-not-registered' || errCode === 'messaging/invalid-registration-token') {
+                                            failedTokens.push(failedToken);
+                                        } else {
+                                            console.warn(`⚠️ Other FCM Error for token ${failedToken}:`, resp.error);
+                                        }
+                                    }
+                                });
 
-                for (let i = 0; i < tokens.length; i += chunkSize) {
-                    const chunk = tokens.slice(i, i + chunkSize);
-                    const pushMessage = { ...baseMessage, tokens: chunk };
-                    const response = await fcm.sendEachForMulticast(pushMessage);
+                                if (failedTokens.length > 0) {
+                                    console.log(`🗑️ Deleting ${failedTokens.length} invalid/unregistered FCM tokens for user ${userId}.`);
+                                    await prisma.fCMTokens.deleteMany({
+                                        where: {
+                                            fcm_token: { in: failedTokens }
+                                        }
+                                    });
+                                }
+                            }
+                            console.log(`✅ Lambda: Sent ${response.successCount} push messages to user ${userId}.`);
+                        } catch (fcmError) {
+                            console.error(`❌ FCM Cluster Error when sending push to user ${userId}:`, fcmError);
+                        }
+                    } else {
+                        console.log(`🔕 No FCM tokens found for user ${userId}. Skipping push.`);
+                    }
 
-                    successCount += response.successCount;
-                    failureCount += response.failureCount;
+                } catch (userError) {
+                    console.error(`❌ Error processing notification for user ${userId}:`, userError);
+                    // Do not throw! Continue to the next user in the array.
                 }
-
-                console.log(`✅ Lambda: Sent ${successCount} push messages to ${userIds.length} users.`);
-                if (failureCount > 0) {
-                    console.warn(`⚠️ Lambda: Failed to send ${failureCount} push messages.`);
-                }
-            } else {
-                console.log(`🔕 No FCM tokens found for the ${userIds.length} requested users. Skipping push.`);
             }
 
         } catch (error) {

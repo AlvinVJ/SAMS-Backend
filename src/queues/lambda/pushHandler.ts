@@ -42,11 +42,39 @@ export const handler = async (event: any, context: any) => {
                     tokens: tokens,
                 };
 
-                const response = await fcm.sendEachForMulticast(pushMessage);
+                try {
+                    const response = await fcm.sendEachForMulticast(pushMessage);
 
-                console.log(`✅ Lambda: Sent ${response.successCount} push messages to ${targetUserId}.`);
-                if (response.failureCount > 0) {
-                    console.warn(`⚠️ Lambda: Failed to send ${response.failureCount} push messages.`);
+                    console.log(`✅ Lambda: Sent ${response.successCount} push messages to ${targetUserId}.`);
+
+                    if (response.failureCount > 0) {
+                        console.warn(`⚠️ Lambda: Encountered ${response.failureCount} push failures inside payload.`);
+                        const failedTokens: string[] = [];
+
+                        response.responses.forEach((resp, idx) => {
+                            if (!resp.success && resp.error) {
+                                const errCode = resp.error.code;
+                                const failedToken = tokens[idx] as string;
+                                if (errCode === 'messaging/registration-token-not-registered' || errCode === 'messaging/invalid-registration-token') {
+                                    failedTokens.push(failedToken);
+                                } else {
+                                    console.warn(`⚠️ Other FCM Error for token ${failedToken}:`, resp.error);
+                                }
+                            }
+                        });
+
+                        if (failedTokens.length > 0) {
+                            console.log(`🗑️ Deleting ${failedTokens.length} invalid/unregistered FCM tokens from database.`);
+                            await prisma.fCMTokens.deleteMany({
+                                where: {
+                                    fcm_token: { in: failedTokens }
+                                }
+                            });
+                        }
+                    }
+                } catch (fcmError) {
+                    // Global FCM failure, log it safely so SQS queue ACKs!
+                    console.error(`❌ FCM Cluster Error when sending payload.`, fcmError);
                 }
             } else {
                 console.log(`🔕 No FCM tokens found for user ${targetUserId}. Skipping push.`);
