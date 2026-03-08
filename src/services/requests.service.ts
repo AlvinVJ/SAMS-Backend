@@ -612,6 +612,22 @@ export async function getRequestDetails(requestId: string): Promise<Result> {
       }
     }
 
+    // Generate Signed URL for attachment if path exists
+    if (data.formData?.attachmentPath) {
+      try {
+        const { data: q, error } = await supabase.storage
+          .from("assets_sams")
+          .createSignedUrl(data.formData.attachmentPath, 3600);
+
+        if (q?.signedUrl) {
+          data.formData.attachmentUrl = q.signedUrl;
+          console.log(`[DEBUG] Generated signed URL for Request ${requestId}`);
+        }
+      } catch (e) {
+        console.error(`[DEBUG] Failed to generate signed URL for Request ${requestId}:`, e);
+      }
+    }
+
     return {
       success: true,
       statusCode: 200,
