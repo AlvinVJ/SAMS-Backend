@@ -4,7 +4,6 @@ import { publishRequestWithdrawn, publishApprovalAlert } from "../queues/produce
 import { supabase } from "../config/supabase.js";
 import { processPlacementAttendance } from "./placement.service.js";
 import { processHostellerNotification } from "./hostel.service.js";
-import { publishApprovalAlert } from "../queues/producers/importantProducer.js";
 
 interface Result {
   success: boolean;
