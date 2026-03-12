@@ -19,9 +19,3 @@ A robust, enterprise-grade backend infrastructure designed to automate administr
 - **ORM**: Prisma
 - **Cloud/Services**: Supabase (Storage), AWS SQS (Message Queue), Firebase Admin SDK
 - **Web Framework**: Express.js
-
-## 📜 Recent Improvements
-
-- **Club-Based Routing**: Resolved approver resolution issues by automatically identifying club context from the requester's Profile.
-- **Hook Reliability**: Fixed state-management bugs in procedure versioning, ensuring `hook_trigger` points are correctly preserved during edits.
-- **Analytics Optimization**: Streamlined counters for pending, approved, and rejected actions across various faculty roles.
