@@ -43,7 +43,8 @@ import {
   searchFaculty,
   getRoleUsers,
   assignRoleUser,
-  removeRoleUser
+  removeRoleUser,
+  getClassStudents
 } from "../controllers/admin.controller.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { requireAuth } from "../middleware/requireAuth.js";
@@ -111,7 +112,8 @@ adminRouter.get("/department/:id/faculty-roles", getDepartmentFacultyRoles);
 adminRouter.post("/department/assign-role", assignDepartmentRole);
 adminRouter.delete("/department/faculty/:mits_uid", removeDepartmentRole);
 
-// Class Faculty
+// Class Faculty & Students
 adminRouter.get("/class/:id/faculty-roles", getClassFacultyRoles);
+adminRouter.get("/class/:id/students", getClassStudents);
 adminRouter.post("/class/assign-role", assignClassRole);
 adminRouter.delete("/class/faculty/:class_id/:mits_uid/:role_tag", removeClassRole);

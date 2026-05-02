@@ -659,11 +659,14 @@ export async function deleteBatch(batch_id: number): Promise<Result> {
 // CLASSES CRUD
 // ============================================
 
-export async function getClasses(batchId?: number): Promise<Result> {
+export async function getClasses(batchId?: number, deptId?: number): Promise<Result> {
   try {
     const whereClause: any = { deleted_at: null };
     if (batchId) {
       whereClause.batch_id = batchId;
+    }
+    if (deptId) {
+      whereClause.dept_id = deptId;
     }
     const classes = await prisma.classes.findMany({
       where: whereClause,
@@ -2468,6 +2471,34 @@ export async function removeRoleUserService(roleId: number, mitsUid: string): Pr
     };
   } catch (error: any) {
     console.error("removeRoleUserService error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: error.message || "Internal server error",
+    };
+  }
+}
+
+export async function getClassStudentsService(classId: number): Promise<Result> {
+  try {
+    const students = await prisma.student.findMany({
+      where: { class_id: classId, is_active: true },
+      orderBy: { name: 'asc' },
+      select: {
+        mits_uid: true,
+        name: true,
+        gender: true,
+      }
+    });
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Class students fetched successfully",
+      data: students,
+    };
+  } catch (error: any) {
+    console.error("getClassStudentsService error:", error);
     return {
       success: false,
       statusCode: 500,

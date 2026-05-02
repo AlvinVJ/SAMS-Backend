@@ -198,8 +198,11 @@ export async function deleteBatch(req: Request, res: Response) {
 // ============================================
 
 export async function getClasses(req: Request, res: Response) {
-  const { batch_id } = req.query;
-  const result = await AdminService.getClasses(batch_id ? Number(batch_id) : undefined);
+  const { batch_id, dept_id } = req.query;
+  const result = await AdminService.getClasses(
+    batch_id ? Number(batch_id) : undefined,
+    dept_id ? Number(dept_id) : undefined
+  );
   return res.status(result.statusCode).json(result);
 }
 
@@ -532,5 +535,10 @@ export async function removeRoleUser(req: Request<{ id: string, mits_uid: string
     return res.status(400).json({ success: false, message: "role_id and mits_uid are required" });
   }
   const result = await AdminService.removeRoleUserService(Number(id), mits_uid);
+  return res.status(result.statusCode).json(result);
+}
+
+export async function getClassStudents(req: Request, res: Response) {
+  const result = await AdminService.getClassStudentsService(Number(req.params.id));
   return res.status(result.statusCode).json(result);
 }
