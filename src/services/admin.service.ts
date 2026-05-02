@@ -1844,12 +1844,72 @@ export async function getDepartmentFacultyRoles(dept_id: number): Promise<Result
     return {
       success: true,
       statusCode: 200,
-      message: "Department faculty roles fetched",
+      message: "Department faculty roles fetched successfully",
       data: roles
     };
-  } catch (error) {
+  } catch (error: any) {
     console.error("getDepartmentFacultyRoles error:", error);
-    return { success: false, statusCode: 500, message: "Internal server error" };
+    return {
+      success: false,
+      statusCode: 500,
+      message: error.message || "Internal server error"
+    };
+  }
+}
+
+export async function getDepartmentFacultyWithRolesService(dept_id: number): Promise<Result> {
+  try {
+    const faculty = await prisma.faculty.findMany({
+      where: {
+        department_id: dept_id,
+        is_active: true
+      },
+      include: {
+        ClassFaculty: {
+          where: { is_active: true },
+          include: {
+            Classes: true,
+            Roles: true
+          }
+        },
+        DepartmentFaculty: {
+          include: {
+            Roles: true
+          }
+        }
+      },
+      orderBy: { name: 'asc' }
+    });
+
+    // Fetch all role mappings for these faculty manually as there's no direct relation in schema
+    const mitsUids = faculty.map(f => f.mits_uid);
+    const roleMappings = await prisma.roleMapping.findMany({
+      where: {
+        mits_uid: { in: mitsUids },
+        is_active: true
+      },
+      include: { Roles: true }
+    });
+
+    // Combine them
+    const resultData = faculty.map(f => ({
+      ...f,
+      RoleMapping: roleMappings.filter(rm => rm.mits_uid === f.mits_uid)
+    }));
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Department faculty list fetched successfully",
+      data: resultData
+    };
+  } catch (error: any) {
+    console.error("getDepartmentFacultyWithRolesService error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: error.message || "Internal server error"
+    };
   }
 }
 

@@ -469,6 +469,11 @@ export async function bulkImportPlacementAttendance(req: Request, res: Response)
     return res.status(500).json({ success: false, message: "Internal server error" });
   }
 }
+export async function getDepartmentFacultyWithRoles(req: Request, res: Response) {
+  const result = await AdminService.getDepartmentFacultyWithRolesService(Number(req.params.id));
+  return res.status(result.statusCode).json(result);
+}
+
 export async function getDepartmentFacultyRoles(req: Request, res: Response) {
   const result = await AdminService.getDepartmentFacultyRoles(Number(req.params.id));
   return res.status(result.statusCode).json(result);

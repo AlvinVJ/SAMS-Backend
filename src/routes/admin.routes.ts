@@ -47,7 +47,8 @@ import {
   getClassStudents,
   getClubs,
   assignClubRole,
-  removeClubRole
+  removeClubRole,
+  getDepartmentFacultyWithRoles
 } from "../controllers/admin.controller.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { requireAuth } from "../middleware/requireAuth.js";
@@ -111,6 +112,7 @@ adminRouter.post("/bulk-import-faculty", upload.single("file"), bulkImportFacult
 adminRouter.post("/bulk-import-clubs", upload.single("file"), bulkImportClubs);
 
 // Department Faculty
+adminRouter.get("/department/:id/faculty", getDepartmentFacultyWithRoles);
 adminRouter.get("/department/:id/faculty-roles", getDepartmentFacultyRoles);
 adminRouter.post("/department/assign-role", assignDepartmentRole);
 adminRouter.delete("/department/faculty/:mits_uid", removeDepartmentRole);
