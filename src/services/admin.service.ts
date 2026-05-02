@@ -2051,21 +2051,25 @@ export async function getClassFacultyRoles(classId: number): Promise<Result> {
 export async function assignClassRole(payload: {
   class_id: number,
   mits_uid: string,
-  role_tag: string
+  role_tag: string,
+  replace_mits_uid?: string
 }): Promise<Result> {
   try {
-    const { class_id, mits_uid, role_tag } = payload;
+    const { class_id, mits_uid, role_tag, replace_mits_uid } = payload;
 
-    // 1. Find role_id (case-insensitive) - although we use role_tag in ClassFaculty table directly
-    // The schema says ClassFaculty links to Roles via role_tag.
+    // Normalize all advisor-related tags to 'CLASS_ADVISOR'
+    const normalizedTag = (role_tag.toUpperCase() === 'CLASS_ADVISOR' || role_tag.toUpperCase().startsWith('ADVISOR_'))
+      ? 'CLASS_ADVISOR'
+      : role_tag;
+
     let role = await prisma.roles.findFirst({
       where: {
-        role_tag: { equals: role_tag, mode: 'insensitive' }
+        role_tag: { equals: normalizedTag, mode: 'insensitive' }
       }
     });
 
     if (!role) {
-      if (role_tag.toUpperCase() === 'CLASS_ADVISOR') {
+      if (normalizedTag === 'CLASS_ADVISOR') {
         role = await prisma.roles.create({
           data: {
             role_tag: 'CLASS_ADVISOR',
@@ -2078,12 +2082,23 @@ export async function assignClassRole(payload: {
       }
     }
 
-    // Since ClassFaculty has a composite primary key [class_id, mits_uid, role_tag], 
-    // and we want to allow "re-assignment" (e.g. if someone was deleted before), we use upsert.
-    // However, the rule is typically "2 advisors". We might want to allow multiple under same tag?
-    // User said "2 class advisors". This usually means index 1 and index 2 or just two entries with 'CLASS_ADVISOR' tag.
-    // If it's just 'CLASS_ADVISOR' tag, then they are distinct by mits_uid.
+    // If a replacement was requested, deactivate the old record first
+    if (replace_mits_uid && replace_mits_uid !== mits_uid) {
+      await prisma.classFaculty.updateMany({
+        where: {
+          class_id,
+          mits_uid: replace_mits_uid,
+          role_tag: role.role_tag,
+          is_active: true
+        },
+        data: {
+          is_active: false,
+          deleted_at: new Date()
+        }
+      });
+    }
 
+    // Upsert the new assignment
     await prisma.classFaculty.upsert({
       where: {
         class_id_mits_uid_role_tag: {
@@ -2117,13 +2132,11 @@ export async function removeClassRole(payload: {
   role_tag: string
 }): Promise<Result> {
   try {
-    await prisma.classFaculty.update({
+    await prisma.classFaculty.updateMany({
       where: {
-        class_id_mits_uid_role_tag: {
-          class_id: payload.class_id,
-          mits_uid: payload.mits_uid,
-          role_tag: payload.role_tag
-        }
+        class_id: payload.class_id,
+        mits_uid: payload.mits_uid,
+        role_tag: { equals: payload.role_tag, mode: 'insensitive' }
       },
       data: {
         is_active: false,
