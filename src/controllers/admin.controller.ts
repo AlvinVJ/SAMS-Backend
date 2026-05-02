@@ -542,3 +542,23 @@ export async function getClassStudents(req: Request, res: Response) {
   const result = await AdminService.getClassStudentsService(Number(req.params.id));
   return res.status(result.statusCode).json(result);
 }
+
+export async function getClubs(req: Request, res: Response) {
+  const result = await AdminService.getClubsService();
+  return res.status(result.statusCode).json(result);
+}
+
+export async function assignClubRole(req: Request, res: Response) {
+  const result = await AdminService.assignClubRoleService(req.body);
+  return res.status(result.statusCode).json(result);
+}
+
+export async function removeClubRole(req: Request, res: Response) {
+  const { club_id, mits_uid, role_tag } = req.params;
+  const result = await AdminService.removeClubRoleService({
+    club_id: Number(club_id),
+    mits_uid,
+    role_tag
+  });
+  return res.status(result.statusCode).json(result);
+}

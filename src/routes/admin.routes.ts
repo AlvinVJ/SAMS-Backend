@@ -44,7 +44,10 @@ import {
   getRoleUsers,
   assignRoleUser,
   removeRoleUser,
-  getClassStudents
+  getClassStudents,
+  getClubs,
+  assignClubRole,
+  removeClubRole
 } from "../controllers/admin.controller.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { requireAuth } from "../middleware/requireAuth.js";
@@ -117,3 +120,8 @@ adminRouter.get("/class/:id/faculty-roles", getClassFacultyRoles);
 adminRouter.get("/class/:id/students", getClassStudents);
 adminRouter.post("/class/assign-role", assignClassRole);
 adminRouter.delete("/class/faculty/:class_id/:mits_uid/:role_tag", removeClassRole);
+
+// Clubs
+adminRouter.get("/clubs", getClubs);
+adminRouter.post("/club/assign-role", assignClubRole);
+adminRouter.delete("/club/role/:club_id/:mits_uid/:role_tag", removeClubRole);

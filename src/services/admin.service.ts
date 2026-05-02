@@ -2506,3 +2506,179 @@ export async function getClassStudentsService(classId: number): Promise<Result> 
     };
   }
 }
+
+export async function getClubsService(): Promise<Result> {
+  try {
+    const clubs = await prisma.clubs.findMany({
+      where: { is_active: true, deleted_at: null },
+      include: {
+        Departments: true,
+        RoleMapping: {
+          include: {
+            Roles: true
+          }
+        },
+        ClubAdmin: {
+          include: {
+            RoleMapping: {
+              include: {
+                Roles: true
+              }
+            }
+          }
+        }
+      },
+      orderBy: { club_name: 'asc' }
+    });
+
+    // Resolve names for coordinator and admins
+    const resolvedClubs = await Promise.all(clubs.map(async (club) => {
+      let coordinatorName = "Unknown";
+      let coordinatorUid = "Unknown";
+      if (club.RoleMapping) {
+        coordinatorUid = club.RoleMapping.mits_uid;
+        coordinatorName = await getUserNameFromUid(coordinatorUid);
+      }
+
+      const admins = await Promise.all(club.ClubAdmin.map(async (admin) => {
+        let adminName = "Unknown";
+        let mits_uid = "Unknown";
+        if (admin.RoleMapping) {
+          mits_uid = admin.RoleMapping.mits_uid;
+          adminName = await getUserNameFromUid(mits_uid);
+        }
+        return {
+          ...admin,
+          adminName,
+          mits_uid
+        };
+      }));
+
+      return {
+        ...club,
+        coordinatorName,
+        coordinatorUid,
+        admins
+      };
+    }));
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Clubs fetched successfully",
+      data: resolvedClubs
+    };
+  } catch (error: any) {
+    console.error("getClubsService error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: error.message || "Internal server error"
+    };
+  }
+}
+
+export async function assignClubRoleService(payload: {
+  club_id: number;
+  mits_uid: string;
+  role_tag: string;
+}): Promise<Result> {
+  try {
+    const { club_id, mits_uid, role_tag } = payload;
+
+    const role = await prisma.roles.findFirst({
+      where: { role_tag: { equals: role_tag, mode: "insensitive" } },
+    });
+    if (!role) return { success: false, statusCode: 404, message: `Role ${role_tag} not found` };
+
+    let mapping = await prisma.roleMapping.findFirst({
+      where: { mits_uid, role_id: role.role_id },
+    });
+
+    if (!mapping) {
+      const maxId = await prisma.roleMapping.aggregate({ _max: { role_mapping_id: true } });
+      mapping = await prisma.roleMapping.create({
+        data: {
+          role_mapping_id: (maxId._max.role_mapping_id || 0) + 1,
+          role_id: role.role_id,
+          mits_uid,
+          is_active: true,
+        },
+      });
+    } else if (!mapping.is_active) {
+      mapping = await prisma.roleMapping.update({
+        where: { role_mapping_id: mapping.role_mapping_id },
+        data: { is_active: true, deleted_at: null },
+      });
+    }
+
+    if (role_tag === "CLUB_COORDINATOR") {
+      await prisma.clubs.update({
+        where: { club_id },
+        data: { coordinator_role_mapping_id: mapping.role_mapping_id },
+      });
+    } else {
+      const existingAdmin = await prisma.clubAdmin.findFirst({
+        where: { club_id, role_mapping_id: mapping.role_mapping_id },
+      });
+      if (!existingAdmin) {
+        const maxId = await prisma.clubAdmin.aggregate({ _max: { club_admin_id: true } });
+        await prisma.clubAdmin.create({
+          data: {
+            club_admin_id: (maxId._max.club_admin_id || 0) + 1,
+            club_id,
+            role_mapping_id: mapping.role_mapping_id,
+            is_active: true,
+          },
+        });
+      } else {
+        await prisma.clubAdmin.update({
+          where: { club_admin_id: existingAdmin.club_admin_id },
+          data: { is_active: true, deleted_at: null },
+        });
+      }
+    }
+
+    return { success: true, statusCode: 200, message: "Club role assigned successfully" };
+  } catch (error: any) {
+    console.error("assignClubRoleService error:", error);
+    return { success: false, statusCode: 500, message: error.message || "Internal server error" };
+  }
+}
+
+export async function removeClubRoleService(payload: {
+  club_id: number;
+  mits_uid: string;
+  role_tag: string;
+}): Promise<Result> {
+  try {
+    const { club_id, mits_uid, role_tag } = payload;
+
+    const role = await prisma.roles.findFirst({
+      where: { role_tag: { equals: role_tag, mode: "insensitive" } },
+    });
+    if (!role) return { success: false, statusCode: 404, message: `Role ${role_tag} not found` };
+
+    const mapping = await prisma.roleMapping.findFirst({
+      where: { mits_uid, role_id: role.role_id, is_active: true },
+    });
+    if (!mapping) return { success: false, statusCode: 404, message: "Role mapping not found" };
+
+    if (role_tag === "CLUB_COORDINATOR") {
+      await prisma.clubs.update({
+        where: { club_id },
+        data: { coordinator_role_mapping_id: null },
+      });
+    } else {
+      await prisma.clubAdmin.updateMany({
+        where: { club_id, role_mapping_id: mapping.role_mapping_id },
+        data: { is_active: false, deleted_at: new Date() },
+      });
+    }
+
+    return { success: true, statusCode: 200, message: "Club role removed successfully" };
+  } catch (error: any) {
+    console.error("removeClubRoleService error:", error);
+    return { success: false, statusCode: 500, message: error.message || "Internal server error" };
+  }
+}
