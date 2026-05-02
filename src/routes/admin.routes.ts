@@ -40,7 +40,10 @@ import {
   removeClassRole,
   updateRole,
   deleteRole,
-  searchFaculty
+  searchFaculty,
+  getRoleUsers,
+  assignRoleUser,
+  removeRoleUser
 } from "../controllers/admin.controller.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { requireAuth } from "../middleware/requireAuth.js";
@@ -83,6 +86,9 @@ adminRouter.post("/search-faculty", searchFaculty);
 adminRouter.post("/user", createUser);
 adminRouter.put("/user/:id", updateUser);
 adminRouter.get("/roles", getRoles);
+adminRouter.get("/roles/:id/users", getRoleUsers);
+adminRouter.post("/roles/assign-user", assignRoleUser);
+adminRouter.delete("/roles/:id/users/:mits_uid", removeRoleUser);
 adminRouter.post("/role", createRole);
 adminRouter.put("/role", updateRole);
 adminRouter.delete("/role/:id", deleteRole);

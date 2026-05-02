@@ -507,3 +507,30 @@ export async function removeClassRole(req: Request<{ class_id: string, mits_uid:
   });
   return res.status(result.statusCode).json(result);
 }
+
+// ============================================
+// GLOBAL ROLE ASSIGNMENTS
+// ============================================
+
+export async function getRoleUsers(req: Request, res: Response) {
+  const result = await AdminService.getRoleUsersService(Number(req.params.id));
+  return res.status(result.statusCode).json(result);
+}
+
+export async function assignRoleUser(req: Request, res: Response) {
+  const { role_id, mits_uid } = req.body;
+  if (!role_id || !mits_uid) {
+    return res.status(400).json({ success: false, message: "role_id and mits_uid are required" });
+  }
+  const result = await AdminService.assignRoleUserService(Number(role_id), mits_uid);
+  return res.status(result.statusCode).json(result);
+}
+
+export async function removeRoleUser(req: Request<{ id: string, mits_uid: string }>, res: Response) {
+  const { id, mits_uid } = req.params;
+  if (!id || !mits_uid) {
+    return res.status(400).json({ success: false, message: "role_id and mits_uid are required" });
+  }
+  const result = await AdminService.removeRoleUserService(Number(id), mits_uid);
+  return res.status(result.statusCode).json(result);
+}

@@ -2315,7 +2315,163 @@ export async function bulkImportClubsService(payload: {
     return {
       success: false,
       statusCode: 500,
-      message: error.message || "Internal server error"
+    };
+  }
+}
+
+// ============================================
+// GLOBAL ROLE ASSIGNMENTS
+// ============================================
+
+export async function getRoleUsersService(roleId: number): Promise<Result> {
+  try {
+    const mappings = await prisma.roleMapping.findMany({
+      where: { role_id: roleId, is_active: true },
+    });
+
+    const mitsUids = mappings.map((m) => m.mits_uid);
+
+    const faculties = await prisma.faculty.findMany({
+      where: { mits_uid: { in: mitsUids } },
+      include: { Departments: true },
+    });
+
+    const students = await prisma.student.findMany({
+      where: { mits_uid: { in: mitsUids } },
+      include: { Classes: { include: { Departments: true } } },
+    });
+
+    const combinedUsers = mappings.map((m) => {
+      const faculty = faculties.find((f) => f.mits_uid === m.mits_uid);
+      if (faculty) {
+        return {
+          role_mapping_id: m.role_mapping_id,
+          mits_uid: faculty.mits_uid,
+          name: faculty.name,
+          department: faculty.Departments.dept_name,
+          type: 'FACULTY'
+        };
+      }
+      const student = students.find((s) => s.mits_uid === m.mits_uid);
+      if (student) {
+        return {
+          role_mapping_id: m.role_mapping_id,
+          mits_uid: student.mits_uid,
+          name: student.name,
+          department: student.Classes.Departments.dept_name,
+          type: 'STUDENT'
+        };
+      }
+      return {
+        role_mapping_id: m.role_mapping_id,
+        mits_uid: m.mits_uid,
+        name: "Unknown",
+        department: "Unknown",
+        type: "UNKNOWN"
+      };
+    });
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Role users fetched successfully",
+      data: combinedUsers,
+    };
+  } catch (error: any) {
+    console.error("getRoleUsersService error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: error.message || "Internal server error",
+    };
+  }
+}
+
+export async function assignRoleUserService(roleId: number, mitsUid: string): Promise<Result> {
+  try {
+    const existingMapping = await prisma.roleMapping.findFirst({
+      where: { role_id: roleId, mits_uid: mitsUid }
+    });
+
+    if (existingMapping) {
+      if (existingMapping.is_active) {
+        return {
+          success: false,
+          statusCode: 400,
+          message: "User is already assigned to this role",
+        };
+      }
+      // Reactivate
+      await prisma.roleMapping.update({
+        where: { role_mapping_id: existingMapping.role_mapping_id },
+        data: { is_active: true }
+      });
+      return {
+        success: true,
+        statusCode: 200,
+        message: "User assigned to role successfully",
+      };
+    }
+
+    const maxIdResult = await prisma.roleMapping.aggregate({
+      _max: { role_mapping_id: true }
+    });
+    const nextId = (maxIdResult._max.role_mapping_id || 0) + 1;
+
+    await prisma.roleMapping.create({
+      data: {
+        role_mapping_id: nextId,
+        role_id: roleId,
+        mits_uid: mitsUid,
+        is_active: true,
+      }
+    });
+
+    return {
+      success: true,
+      statusCode: 201,
+      message: "User assigned to role successfully",
+    };
+  } catch (error: any) {
+    console.error("assignRoleUserService error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: error.message || "Internal server error",
+    };
+  }
+}
+
+export async function removeRoleUserService(roleId: number, mitsUid: string): Promise<Result> {
+  try {
+    const existingMapping = await prisma.roleMapping.findFirst({
+      where: { role_id: roleId, mits_uid: mitsUid, is_active: true }
+    });
+
+    if (!existingMapping) {
+      return {
+        success: false,
+        statusCode: 404,
+        message: "Role assignment not found",
+      };
+    }
+
+    await prisma.roleMapping.update({
+      where: { role_mapping_id: existingMapping.role_mapping_id },
+      data: { is_active: false, deleted_at: new Date() }
+    });
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "User removed from role successfully",
+    };
+  } catch (error: any) {
+    console.error("removeRoleUserService error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: error.message || "Internal server error",
     };
   }
 }
