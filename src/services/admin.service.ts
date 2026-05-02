@@ -2391,6 +2391,7 @@ export async function bulkImportClubsService(payload: {
     return {
       success: false,
       statusCode: 500,
+      message: error.message || "Internal server error",
     };
   }
 }

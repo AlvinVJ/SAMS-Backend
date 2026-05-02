@@ -562,8 +562,8 @@ export async function removeClubRole(req: Request, res: Response) {
   const { club_id, mits_uid, role_tag } = req.params;
   const result = await AdminService.removeClubRoleService({
     club_id: Number(club_id),
-    mits_uid,
-    role_tag
+    mits_uid: mits_uid as string,
+    role_tag: role_tag as string
   });
   return res.status(result.statusCode).json(result);
 }
